@@ -162,6 +162,7 @@ class Config:
     opencode_enabled: bool = False
     opencode_bin: str = "opencode"
     opencode_model: str = ""
+    fast_render: bool = False
     capabilities: Optional[Capabilities] = None
 
     # ------------------------------------------------------------------ derived
@@ -221,6 +222,7 @@ class Config:
             opencode_enabled=_as_bool("OPENCODE_ENABLED", False),
             opencode_bin=str(_env("OPENCODE_BIN", "opencode")),
             opencode_model=str(_env("OPENCODE_MODEL", "")),
+            fast_render=_as_bool("FAST_RENDER", False),
         )
         if detect:
             cfg.capabilities = detect_capabilities()
@@ -237,6 +239,17 @@ class Config:
             problems.append("TELEGRAM_ALLOWED_USER_IDS has an implausible number of IDs")
         return problems
 
+    def render_overrides(self) -> Dict[str, object]:
+        """Return render dimension overrides for fast rendering.
+
+        When fast_render is truthy, return low-resolution overrides suitable for
+        a preview-style full render (960x540 @24fps). Otherwise return an empty
+        mapping so caller-supplied dimensions are preserved.
+        """
+        if self.fast_render:
+            return {"width": 960, "height": 540, "fps": 24}
+        return {}
+
     def summary(self) -> Dict[str, object]:
         """Safe, redacted summary for logging and /health."""
         caps = self.capabilities.as_dict() if self.capabilities else {}
@@ -249,6 +262,7 @@ class Config:
             "max_upload_mb": self.max_upload_mb,
             "job_timeout_sec": self.job_timeout_sec,
             "opencode_enabled": self.opencode_enabled,
+            "fast_render": bool(self.fast_render),
             "capabilities": caps,
         }
 
