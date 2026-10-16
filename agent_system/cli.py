@@ -1,0 +1,214 @@
+# -*- coding: utf-8 -*-
+"""cli.py — command-line interface.
+
+    python3 -m agent_system serve              # run the Telegram bot
+    python3 -m agent_system health             # capabilities + backend readiness
+    python3 -m agent_system styles             # list the three animation styles
+    python3 -m agent_system run-job --firm "..." --website https://... --style motion
+    python3 -m agent_system run-job --no-render        # research + story only
+    python3 -m agent_system check-spec path/to/scene_manifest.json
+    python3 -m agent_system selftest           # render a 6-second test clip per backend
+"""
+import argparse
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+from . import video
+from .config import Config
+from .jobs import JobStore
+from .orchestrator import JobRequest, run_job, sanitize_request
+from .security import redact
+
+
+def _cfg() -> Config:
+    return Config.from_env()
+
+
+def cmd_health(args) -> int:
+    cfg = _cfg()
+    cfg.ensure_dirs()
+    print(json.dumps(cfg.summary(), indent=2))
+    print("\nBackends:")
+    for info in video.list_backends():
+        print("  %-12s ready=%-5s %s" % (info["style"], info["ready"],
+                                         "; ".join(info.get("reasons", [])) or "ok"))
+    return 0
+
+
+def cmd_styles(args) -> int:
+    for info in video.list_backends():
+        print("%-12s %-30s %s" % (info["style"], info["label"],
+                                  "READY" if info["ready"] else "UNAVAILABLE"))
+        for r in info.get("reasons", []):
+            print("    ! %s" % r)
+        for lim in info.get("limitations", []):
+            print("    - %s" % lim)
+    return 0
+
+
+def cmd_serve(args) -> int:
+    from .telegrambot.bot import main as bot_main
+    return bot_main()
+
+
+def cmd_run_job(args) -> int:
+    cfg = _cfg()
+    cfg.ensure_dirs()
+    store = JobStore(cfg.db_path)
+    raw = {
+        "firm_name": args.firm, "website": args.website or "",
+        "facebook": args.facebook or "", "language": args.language,
+        "style": args.style, "duration_sec": args.duration,
+        "new_office": args.new_office or "", "event_date": args.event_date or "",
+        "extra_urls": args.extra or [], "preview_only": bool(args.preview_only),
+    }
+    req = sanitize_request(raw)
+    job_id = store.create(0, req.style, req.language, req.firm_name,
+                          req.duration_sec, None, params=req.to_dict())
+
+    def progress(stage: str, pct: int, msg: str) -> None:
+        print("[%3d%%] %-10s %s" % (pct, stage, redact(msg)))
+
+    def approve(payload: Dict[str, Any]) -> bool:
+        if args.auto_approve:
+            print("[approval] auto-approved (%d scenes, gaps: %s)"
+                  % (len(payload["scenes"]), ", ".join(payload["gaps"]) or "none"))
+            return True
+        print("[approval] storyboard written to %s" % cfg.job_dir(job_id))
+        return False
+
+    overrides = {}
+    if args.fast:
+        overrides = {"width": 960, "height": 540, "fps": 24}
+    if args.no_render:
+        os.environ.setdefault("AGENT_NO_RENDER", "1")
+
+    result = run_job(cfg, store, job_id, req, progress=progress, approve=approve,
+                     overrides=overrides,
+                     enable_preview=not args.no_preview,
+                     enable_render=not args.no_render,
+                     )
+    print("\nJob %s → %s" % (job_id, result.get("status")))
+    print("Output directory: %s" % cfg.job_dir(job_id))
+    for a in result.get("artifacts", []):
+        print("  • %s" % a)
+    if result.get("output"):
+        print("Video: %s" % result["output"])
+    if result.get("errors"):
+        for e in result["errors"]:
+            print("  error: %s" % e)
+    return 0 if result.get("status") == "completed" else 1
+
+
+def cmd_check_spec(args) -> int:
+    with open(args.path, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    spec, errors = video.validate_render_spec(raw)
+    print("valid: %s" % (not errors))
+    for e in errors:
+        print("  ! %s" % e)
+    print("style=%s scenes=%d total=%.2fs %dx%d@%d"
+          % (spec.style, len(spec.scenes), spec.total_duration,
+             spec.width, spec.height, spec.fps))
+    return 0 if not errors else 1
+
+
+def cmd_selftest(args) -> int:
+    """Render a very short clip with each available backend (real render, real probe)."""
+    from .video import common
+    cfg = _cfg()
+    cfg.ensure_dirs()
+    out_root = os.path.join(cfg.output_dir, "selftest")
+    os.makedirs(out_root, exist_ok=True)
+
+    scenes: List[Dict[str, Any]] = [
+        {"id": "t1", "key": "hook", "kind": "statement", "dur": 2.0,
+         "heading": "Selftest", "sub": "", "narration": "selftest", "placeholder": False},
+        {"id": "t2", "key": "stat", "kind": "stat", "dur": 2.0,
+         "heading": "2010", "sub": "selftest card", "narration": "selftest",
+         "placeholder": False},
+        {"id": "t3", "key": "closing", "kind": "endcard", "dur": 2.0,
+         "heading": "Selftest", "sub": "DEMO", "narration": "selftest",
+         "placeholder": False},
+    ]
+    raw = {"firm_name": "Selftest", "language": "en", "style": "motion",
+           "width": 480, "height": 270, "fps": 12, "scenes": scenes,
+           "audio": {"license": "synthesized_temporary"}, "watermark": "SELFTEST"}
+    results = {}
+    for style in ("motion", "illustrated", "blender3d"):
+        raw["style"] = style
+        spec, errors = video.validate_render_spec(raw)
+        info = video.backend_info(style)
+        entry: Dict[str, Any] = {"ready": info["ready"], "errors": errors}
+        if not info["ready"]:
+            entry["skipped"] = "; ".join(info["reasons"])
+            results[style] = entry
+            continue
+        out = os.path.join(out_root, "selftest_%s.mp4" % style)
+        try:
+            r = video.render_style(spec, out, os.path.join(out_root, "work_" + style))
+            entry.update({"ok": r["validation"]["ok"],
+                          "duration": r["validation"]["duration_sec"],
+                          "size": r["validation"]["size_bytes"],
+                          "output": out})
+        except Exception as exc:
+            entry.update({"ok": False, "exception": "%s: %s" % (type(exc).__name__, exc)})
+        results[style] = entry
+    print(json.dumps(results, indent=2))
+    with open(os.path.join(out_root, "selftest_report.json"), "w", encoding="utf-8") as fh:
+        json.dump(results, fh, indent=2)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="agent_system",
+                                description="Law-firm research & video production system")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("serve", help="run the Telegram bot").set_defaults(func=cmd_serve)
+    sub.add_parser("health", help="capabilities and backend readiness").set_defaults(func=cmd_health)
+    sub.add_parser("styles", help="list animation styles").set_defaults(func=cmd_styles)
+    sub.add_parser("selftest", help="render a short clip per backend").set_defaults(func=cmd_selftest)
+
+    rj = sub.add_parser("run-job", help="run a full job headlessly")
+    rj.add_argument("--firm", required=True)
+    rj.add_argument("--website", default="")
+    rj.add_argument("--facebook", default="")
+    rj.add_argument("--extra", action="append", default=[])
+    rj.add_argument("--language", default="en")
+    rj.add_argument("--style", default="motion",
+                    choices=["motion", "illustrated", "blender3d"])
+    rj.add_argument("--duration", type=int, default=140)
+    rj.add_argument("--new-office", dest="new_office", default="")
+    rj.add_argument("--event-date", dest="event_date", default="")
+    rj.add_argument("--auto-approve", dest="auto_approve", action="store_true", default=True)
+    rj.add_argument("--no-auto-approve", dest="auto_approve", action="store_false")
+    rj.add_argument("--no-render", dest="no_render", action="store_true")
+    rj.add_argument("--no-preview", dest="no_preview", action="store_true",
+                    help="skip the short preview clip")
+    rj.add_argument("--fast", action="store_true",
+                    help="render at 960x540@24 for quick checks")
+    rj.add_argument("--preview-only", dest="preview_only", action="store_true",
+                    help="research + story + short preview only (no full render)")
+    rj.set_defaults(func=cmd_run_job)
+
+    cs = sub.add_parser("check-spec", help="validate a scene manifest")
+    cs.add_argument("path")
+    cs.set_defaults(func=cmd_check_spec)
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print("\ninterrupted")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

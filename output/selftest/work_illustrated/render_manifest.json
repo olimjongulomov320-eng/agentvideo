@@ -1,0 +1,89 @@
+{
+  "generated_at": "2026-10-15T21:16:05",
+  "backend": "illustrated",
+  "engine": {
+    "name": "illustrated-pillow-ffmpeg",
+    "ffmpeg": "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+    "python": "3.9"
+  },
+  "output": {
+    "name": "video.mp4",
+    "width": 480,
+    "height": 270,
+    "fps": 12,
+    "aspect": "16:9",
+    "style": "illustrated",
+    "language": "en",
+    "total_duration_sec": 6.0
+  },
+  "scenes": [
+    {
+      "id": "t1",
+      "key": "hook",
+      "kind": "statement",
+      "dur": 2.0
+    },
+    {
+      "id": "t2",
+      "key": "stat",
+      "kind": "stat",
+      "dur": 2.0
+    },
+    {
+      "id": "t3",
+      "key": "closing",
+      "kind": "endcard",
+      "dur": 2.0
+    }
+  ],
+  "audio": {
+    "music": null,
+    "voiceover": null,
+    "license": "synthesized_temporary",
+    "voice": "none",
+    "music_gain_db": 0.0
+  },
+  "source_assets": [],
+  "limitations": [
+    "Illustrations are procedurally drawn flat art (no commissioned artwork supplied).",
+    "Character animation is limited to procedural figures; bespoke rigged characters require authored SVG/Lottie/PNG assets, which were not supplied.",
+    "Camera moves are 2D pans/zooms; there is no 3D depth.",
+    "Scene changes use crossfades.",
+    "No licensed music is bundled; audio defaults to a synthesized pad (labelled)."
+  ],
+  "validation": {
+    "path": "/Users/olimjongulomov/Desktop/Projects/AI-Bots/AI AGENT FOR MY FATHER(new)/output/selftest/selftest_illustrated.mp4",
+    "ok": true,
+    "checks": [
+      "OK: video stream present",
+      "OK: audio stream present",
+      "OK: duration > 0 (4.583s)",
+      "OK: size > 1 KiB (195560 bytes)",
+      "OK: codec h264",
+      "OK: width 480",
+      "OK: height 270",
+      "OK: fps 12.00"
+    ],
+    "warnings": [],
+    "errors": [],
+    "duration_sec": 4.583,
+    "size_bytes": 195560,
+    "video_codec": "h264",
+    "width": 480,
+    "height": 270,
+    "fps": 12.0,
+    "audio_codec": "aac",
+    "audio_channels": 2,
+    "note": "Technical validation only — ffprobe cannot judge how the film looks or sounds. A human must review the picture and audio."
+  },
+  "demo_label": "SELFTEST",
+  "audio_detail": {
+    "music": "music_synth.wav",
+    "music_license": "synthesized_temporary",
+    "voiceover": null,
+    "voice": "none",
+    "mixing": [
+      "music synthesized from sine waves — NOT licensed music"
+    ]
+  }
+}

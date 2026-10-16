@@ -1,0 +1,23 @@
+{
+  "motion": {
+    "ready": true,
+    "errors": [],
+    "ok": true,
+    "duration": 4.583,
+    "size": 148154,
+    "output": "/Users/olimjongulomov/Desktop/Projects/AI-Bots/AI AGENT FOR MY FATHER(new)/output/selftest/selftest_motion.mp4"
+  },
+  "illustrated": {
+    "ready": true,
+    "errors": [],
+    "ok": true,
+    "duration": 4.583,
+    "size": 195560,
+    "output": "/Users/olimjongulomov/Desktop/Projects/AI-Bots/AI AGENT FOR MY FATHER(new)/output/selftest/selftest_illustrated.mp4"
+  },
+  "blender3d": {
+    "ready": false,
+    "errors": [],
+    "skipped": "Blender is not installed on this machine"
+  }
+}

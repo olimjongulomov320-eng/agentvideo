@@ -1,0 +1,148 @@
+{
+  "firm": "GSP Law Firm",
+  "language": "uz",
+  "style": "motion",
+  "total_duration_sec": 40.0,
+  "generated_at": "2026-10-15T21:37:04",
+  "facts": {
+    "practice_areas": {
+      "value": "IT-право, корпоративное право, экономические споры.",
+      "source": "S01",
+      "confidence": "SINGLE-SOURCE"
+    },
+    "new_office": {
+      "value": "Toshkent, Mirobod tumani, Mirobod ko'chasi, 46a-uy",
+      "source": "USER",
+      "confidence": "CORROBORATED"
+    }
+  },
+  "gaps": [
+    "founding_year",
+    "achievement"
+  ],
+  "scenes": [
+    {
+      "id": "sc1",
+      "key": "hook",
+      "kind": "statement",
+      "start": 0.0,
+      "dur": 4.08,
+      "heading": "",
+      "sub": "",
+      "narration": "Har kuni odamlar qonundan javob kutadi. Ba'zida bu javob juda kech keladi.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc2",
+      "key": "origin",
+      "kind": "timeline",
+      "start": 4.08,
+      "dur": 8.16,
+      "heading": "[tashkil etilgan yil — ochiq manbalarda topilmadi]",
+      "sub": "GSP Law Firm",
+      "narration": "GSP Law Firm o'z faoliyatini Toshkentda boshlagan. [tashkil etilgan yil — ochiq manbalarda topilmadi]",
+      "needs": [
+        "founding_year"
+      ],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": true,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc3",
+      "key": "practice",
+      "kind": "list",
+      "start": 12.24,
+      "dur": 6.12,
+      "heading": "Practice",
+      "sub": "IT-право, корпоративное право, экономические споры.",
+      "narration": "Firma qiyin yo'nalishni tanladi: IT-право, корпоративное право, экономические споры.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "https://gsplaw.co.uz",
+      "source_id": "S01",
+      "evidence": "SINGLE-SOURCE"
+    },
+    {
+      "id": "sc4",
+      "key": "achievements",
+      "kind": "stat",
+      "start": 18.36,
+      "dur": 6.12,
+      "heading": "Record",
+      "sub": "[tasdiqlangan natija — ochiq manbalarda topilmadi]",
+      "narration": "Manbalarda qayd etilgan natija: [tasdiqlangan natija — ochiq manbalarda topilmadi]",
+      "needs": [
+        "achievement"
+      ],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": true,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc5",
+      "key": "people",
+      "kind": "statement",
+      "start": 24.48,
+      "dur": 5.31,
+      "heading": "People",
+      "sub": "",
+      "narration": "Texnologiya ishni tezlashtiradi. Ishonchni esa odam quradi.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc6",
+      "key": "office",
+      "kind": "title",
+      "start": 29.79,
+      "dur": 6.12,
+      "heading": "Toshkent, Mirobod tumani, Mirobod ko'chasi, 46a-uy",
+      "sub": "Toshkent, Mirobod tumani, Mirobod ko'chasi, 46a-uy",
+      "narration": "Yangi ofis — keyingi bosqich uchun maydon.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "supplied",
+      "source_id": "USER",
+      "evidence": "CORROBORATED"
+    },
+    {
+      "id": "sc7",
+      "key": "closing",
+      "kind": "endcard",
+      "start": 35.91,
+      "dur": 4.08,
+      "heading": "GSP Law Firm",
+      "sub": "",
+      "narration": "GSP Law Firm. Ish davom etadi.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    }
+  ]
+}

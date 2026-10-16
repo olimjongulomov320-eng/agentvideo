@@ -1,0 +1,88 @@
+{
+  "generated_at": "2026-10-15T21:37:12",
+  "backend": "motion",
+  "engine": {
+    "name": "motion-pillow-ffmpeg",
+    "ffmpeg": "ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers",
+    "python": "3.9"
+  },
+  "output": {
+    "name": "preview.mp4",
+    "width": 960,
+    "height": 540,
+    "fps": 24,
+    "aspect": "16:9",
+    "style": "motion",
+    "language": "uz",
+    "total_duration_sec": 18.36
+  },
+  "scenes": [
+    {
+      "id": "sc1",
+      "key": "hook",
+      "kind": "statement",
+      "dur": 4.08
+    },
+    {
+      "id": "sc2",
+      "key": "origin",
+      "kind": "timeline",
+      "dur": 8.16
+    },
+    {
+      "id": "sc3",
+      "key": "practice",
+      "kind": "list",
+      "dur": 6.12
+    }
+  ],
+  "audio": {
+    "music": null,
+    "voiceover": null,
+    "license": "synthesized_temporary",
+    "voice": "none",
+    "music_gain_db": 0.0
+  },
+  "source_assets": [],
+  "limitations": [
+    "Transitions between scenes are crossfades computed in the frame renderer.",
+    "Parallax is simulated by counter-moving layers, not by true depth maps.",
+    "No licensed music is bundled; audio defaults to a synthesized pad (labelled).",
+    "The DEMO / CONCEPT PREVIEW watermark is stamped on every preview frame."
+  ],
+  "validation": {
+    "path": "/Users/olimjongulomov/Desktop/Projects/AI-Bots/AI AGENT FOR MY FATHER(new)/output/jobs/JYDV8WGZQ/preview.mp4",
+    "ok": true,
+    "checks": [
+      "OK: video stream present",
+      "OK: audio stream present",
+      "OK: duration > 0 (16.958s)",
+      "OK: size > 1 KiB (639277 bytes)",
+      "OK: codec h264",
+      "OK: width 960",
+      "OK: height 540",
+      "OK: fps 24.00"
+    ],
+    "warnings": [],
+    "errors": [],
+    "duration_sec": 16.958,
+    "size_bytes": 639277,
+    "video_codec": "h264",
+    "width": 960,
+    "height": 540,
+    "fps": 24.0,
+    "audio_codec": "aac",
+    "audio_channels": 2,
+    "note": "Technical validation only — ffprobe cannot judge how the film looks or sounds. A human must review the picture and audio."
+  },
+  "demo_label": "DEMO / CONCEPT PREVIEW — SHORT PREVIEW",
+  "audio_detail": {
+    "music": "music_synth.wav",
+    "music_license": "synthesized_temporary",
+    "voiceover": null,
+    "voice": "none",
+    "mixing": [
+      "music synthesized from sine waves — NOT licensed music"
+    ]
+  }
+}

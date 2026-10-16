@@ -1,0 +1,6 @@
+2026-10-15 21:39:32,722 ERROR agent_system.bot :: configuration problem: TELEGRAM_BOT_TOKEN is not set
+2026-10-15 21:39:32,722 ERROR agent_system.bot :: configuration problem: TELEGRAM_ALLOWED_USER_IDS is not set (no user would be authorized)
+2026-10-15 21:39:32,722 ERROR agent_system.bot :: Refusing to start. Copy .env.example to .env and fill it in.
+2026-10-16 06:21:46,500 ERROR agent_system.bot :: configuration problem: TELEGRAM_BOT_TOKEN is not set
+2026-10-16 06:21:46,501 ERROR agent_system.bot :: configuration problem: TELEGRAM_ALLOWED_USER_IDS is not set (no user would be authorized)
+2026-10-16 06:21:46,501 ERROR agent_system.bot :: Refusing to start. Copy .env.example to .env and fill it in.

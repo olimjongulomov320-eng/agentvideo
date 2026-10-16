@@ -1,0 +1,62 @@
+{
+  "total": 143.4,
+  "music_len": 145.4,
+  "vo": [
+    {
+      "key": "hook",
+      "file": "ru_hook.wav",
+      "start": 2.8,
+      "len": 5.636,
+      "scene_dur": 12.0
+    },
+    {
+      "key": "founder",
+      "file": "ru_founder.wav",
+      "start": 14.1,
+      "len": 18.617,
+      "scene_dur": 24.0
+    },
+    {
+      "key": "practice",
+      "file": "ru_practice.wav",
+      "start": 37.4,
+      "len": 12.675,
+      "scene_dur": 18.0
+    },
+    {
+      "key": "intl",
+      "file": "ru_intl.wav",
+      "start": 54.7,
+      "len": 12.907,
+      "scene_dur": 18.0
+    },
+    {
+      "key": "wakil",
+      "file": "ru_wakil.wav",
+      "start": 72.0,
+      "len": 24.34,
+      "scene_dur": 28.0
+    },
+    {
+      "key": "people",
+      "file": "ru_people.wav",
+      "start": 99.3,
+      "len": 7.172,
+      "scene_dur": 16.0
+    },
+    {
+      "key": "office",
+      "file": "ru_office.wav",
+      "start": 114.6,
+      "len": 9.445,
+      "scene_dur": 18.0
+    },
+    {
+      "key": "closing",
+      "file": "ru_closing.wav",
+      "start": 131.55,
+      "len": 11.227,
+      "scene_dur": 12.0
+    }
+  ]
+}
