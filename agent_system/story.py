@@ -334,6 +334,11 @@ def evidence_basis(facts: Optional[Facts], result: Optional[ResearchResult],
     * ``attributed_statements`` — single-source; evidence the speaker said it
     * ``creative_framing``      — a choice of tone; never a claim
     * ``unresolved_claims``     — named gaps, disclosed rather than filled
+
+    A privacy-flagged interview statement (client-identifying or privileged) is
+    withheld from every bucket and counted instead as a disclosed gap: it stays
+    in the interview analysis and the permission checklist, where a human decides
+    on it, and is never copied into an artefact that could read as cleared.
     """
     facts = facts or Facts(firm_name="")
     result = result or ResearchResult(firm_name="")
@@ -351,14 +356,30 @@ def evidence_basis(facts: Optional[Facts], result: Optional[ResearchResult],
         bucket = (documented if c.evidence_class in (VERIFIED, CORROBORATED)
                   else attributed)
         bucket.append(_line(c.text, c.source_id, c.evidence_class))
+    quarantined = 0
     for c in interview_claims:
+        if getattr(c, "privacy_flags", None):
+            # Flagged as client-identifying or privileged. The statement stays in
+            # the interview analysis and the permission checklist — that is where
+            # a human decides on it — but it is never carried into another
+            # artefact where it could be mistaken for cleared material. The
+            # content is withheld; only the fact that something was withheld is
+            # disclosed, so the gap is visible without the detail leaking.
+            quarantined += 1
+            continue
         attributed.append(_line("recollection: %s" % getattr(c, "text", ""),
                                 "interview", SINGLE_SOURCE))
 
+    unresolved = list(facts.missing())
+    if quarantined:
+        unresolved.append(
+            "%d interview statement(s) withheld from review artefacts "
+            "(client-identifying or privileged) pending a confidentiality "
+            "decision" % quarantined)
     return {"documented_facts": _dedupe(documented),
             "attributed_statements": _dedupe(attributed),
             "creative_framing": [],
-            "unresolved_claims": _dedupe(list(facts.missing()))}
+            "unresolved_claims": _dedupe(unresolved)}
 
 
 def build_concepts(firm: str, facts: Optional[Facts],
@@ -382,6 +403,12 @@ def build_concepts(firm: str, facts: Optional[Facts],
     gaps = list(basis["unresolved_claims"])
     documented = basis["documented_facts"]
     ai_claims = tech_support(result)
+    # The same technology claims, but only the ones a source actually backs:
+    # single-source statements say the firm *said* it, not that it is true.
+    tech_documented = [
+        c for c in (result.claims or [])
+        if _TECH_CLAIM_RE.search(c.text or "")
+        and c.evidence_class in (VERIFIED, CORROBORATED)]
 
     concepts: List[Dict[str, Any]] = [
         {
@@ -429,17 +456,29 @@ def build_concepts(firm: str, facts: Optional[Facts],
         "The firm is shown as the force closing that distance",
     ]
     if ai_claims:
+        # A single-source account is not corroboration: it records what the firm
+        # said, not that it is true. "Strong" is therefore reserved for an arc a
+        # verified or corroborated claim states.
+        corroborated = bool(tech_documented)
         a["central_idea"] = ("Justice is delayed by distance and time; the firm "
                              "closes that gap, and builds legal AI to close it "
                              "faster.")
-        a["evidence_fit_level"] = FIT_STRONG
-        a["evidence_fit"] = ("%s — the technology arc is carried by a cited source"
-                             % FIT_STRONG)
+        a["evidence_fit_level"] = FIT_STRONG if corroborated else FIT_MEDIUM
+        a["evidence_fit"] = (
+            ("%s — the technology arc is corroborated by a cited source"
+             % FIT_STRONG) if corroborated else
+            ("%s — the technology arc rests on a single-source account that no "
+             "document yet corroborates" % FIT_MEDIUM))
         a["strengths"] = ["Emotionally legible in every language",
                           "Works without archive photos",
-                          "Ends on a technology arc the ledger supports"]
+                          ("Ends on a technology arc the ledger corroborates"
+                           if corroborated else
+                           "Names a technology arc a cited source states")]
         a["weaknesses"] = ["Depends on one milestone being verifiable",
                            "Needs an evocative opening image"]
+        if not corroborated:
+            a["weaknesses"].append("Technology arc is single-source until a dated "
+                                   "document corroborates it")
         a["asserted_claims"] = ["the firm builds legal AI"]
         a["evidence_sources"] = [c.split("[")[-1].rstrip("] ") for c in ai_claims]
     else:
@@ -462,7 +501,8 @@ def build_concepts(firm: str, facts: Optional[Facts],
                          "and standards, not slogans.")
     b["creative_framing"] = ["The story is people, habits and standards, not "
                              "slogans — a framing choice, not a claim"]
-    n_interviews = len(interview_claims)
+    n_interviews = len([c for c in interview_claims
+                        if not getattr(c, "privacy_flags", None)])
     if n_interviews:
         b["evidence_fit_level"] = FIT_MEDIUM
         b["evidence_fit"] = ("%s — %d interview statement(s) give real voices; each "

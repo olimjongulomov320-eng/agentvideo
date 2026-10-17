@@ -256,22 +256,39 @@ class TestConceptsAreEvidenceDriven(unittest.TestCase):
     def test_no_concept_is_labelled_strong_without_support(self):
         for c in self.concepts():
             if c.get("asserted_claims"):
-                self.assertEqual(c["evidence_fit_level"], "Strong")
+                # Asserting a firm-specific fact rules out "Limited", but a
+                # single-source assertion can never earn "Strong".
+                self.assertIn(c["evidence_fit_level"], ("Medium", "Strong"))
             # A concept with nothing documented cannot claim a strong fit.
             if not c["evidence_basis"]["documented_facts"]:
                 self.assertNotEqual(c["evidence_fit_level"], "Strong")
 
-    def test_ai_claim_is_only_used_when_the_evidence_supports_it(self):
+    def test_a_single_source_ai_claim_is_not_graded_strong(self):
+        """F3: one uncorroborated statement is not corroboration."""
         res = fiction_research(["Example Legal Test Firm builds legal AI tools."])
         facts = story_mod.extract_facts(res, FICTION_FIRM)
         concepts = story_mod.build_concepts(FICTION_FIRM, facts, res)
         a = next(c for c in concepts if c["id"] == "concept-a")
-        # Now the claim IS in the ledger, so asserting it is legitimate ...
-        self.assertEqual(a["evidence_fit_level"], "Strong")
+        # The claim IS in the ledger, so asserting it is legitimate ...
         self.assertTrue(a["asserted_claims"])
-        # ... but it stays a single-source claim, never promoted to fact.
+        # ... but nothing is documented, so it must not be sold as "Strong".
+        self.assertEqual(a["evidence_fit_level"], "Medium")
+        self.assertTrue(any("single-source" in w.lower()
+                            for w in a["weaknesses"]),
+                        "the single-source weakness must be disclosed")
+        # The statement stays a single-source claim, never promoted to fact.
         self.assertTrue(all("SINGLE-SOURCE" in s or "-" in s
                             for s in a["evidence_sources"]))
+
+    def test_a_corroborated_ai_claim_can_be_graded_strong(self):
+        """The other half of F3: real corroboration does earn "Strong"."""
+        res = fiction_research(["Example Legal Test Firm builds legal AI tools."])
+        res.claims[0].evidence_class = "VERIFIED"
+        facts = story_mod.extract_facts(res, FICTION_FIRM)
+        concepts = story_mod.build_concepts(FICTION_FIRM, facts, res)
+        a = next(c for c in concepts if c["id"] == "concept-a")
+        self.assertEqual(a["evidence_fit_level"], "Strong")
+        self.assertTrue(any("corroborat" in s.lower() for s in a["strengths"]))
 
     def test_evidence_basis_separates_facts_from_framing_and_gaps(self):
         concepts = self.concepts()
@@ -295,6 +312,33 @@ class TestConceptsAreEvidenceDriven(unittest.TestCase):
         self.assertEqual(b["evidence_basis"]["documented_facts"], [])
         self.assertTrue(any("recollection" in a
                             for a in b["evidence_basis"]["attributed_statements"]))
+
+    def test_quarantined_interview_statements_never_enter_a_concept(self):
+        """F1: a privacy-flagged recollection is withheld, and its absence shown.
+
+        The statement stays in the interview analysis and the permission
+        checklist, where a human decides on it. It must not be copied into
+        ``concepts.md``/``concepts.json``, where it could be mistaken for
+        cleared material.
+        """
+        from agent_system.transcripts import InterviewClaim
+        flagged = InterviewClaim(id="a-iq01",
+                                 text="Our client UzMetals asked us to act.")
+        flagged.privacy_flags = ["client-mention"]
+        clean = InterviewClaim(id="a-iq02", text="We began in one room.")
+        concepts = self.concepts(interviews=[flagged, clean])
+        for c in concepts:
+            basis = c["evidence_basis"]
+            blob = json.dumps(basis)
+            self.assertNotIn("UzMetals", blob,
+                             "%s leaked a quarantined client name" % c["id"])
+            self.assertTrue(
+                any("withheld" in u for u in basis["unresolved_claims"]),
+                "%s must disclose that a statement was withheld" % c["id"])
+            self.assertTrue(
+                any("We began in one room." in a
+                    for a in basis["attributed_statements"]),
+                "%s dropped a statement that was safe to attribute" % c["id"])
 
     def test_three_distinct_concepts_and_exactly_one_recommended(self):
         for texts in (None, ["Example Legal Test Firm was founded in 2012."],

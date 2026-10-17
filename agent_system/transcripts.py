@@ -628,6 +628,12 @@ def analyse_transcript(transcript: Transcript, min_words: int = 4) -> InterviewA
     privacy: List[str] = []
     counter = 0
     question_counter = 0
+    # Claim ids are scoped to the source file. Without this, every transcript
+    # numbers its statements from "iq01", so two interviews would share claim
+    # ids and the chronology would read as one source contradicting itself when
+    # it is really two people disagreeing.
+    id_stem = re.sub(r"[^A-Za-z0-9._-]+", "_",
+                     os.path.splitext(analysis.source_name)[0]) or "interview"
     prev_speaker = ""
     prev_text = ""
 
@@ -663,7 +669,7 @@ def analyse_transcript(transcript: Transcript, min_words: int = 4) -> InterviewA
                 # history, so it is kept in its own list.
                 question_counter += 1
                 analysis.questions.append({
-                    "id": "q%02d" % question_counter,
+                    "id": "%s-q%02d" % (id_stem, question_counter),
                     "text": sentence,
                     "speaker": seg.speaker or "unattributed speaker",
                     "timestamp": seg.stamp(),
@@ -682,7 +688,7 @@ def analyse_transcript(transcript: Transcript, min_words: int = 4) -> InterviewA
                 needs.append("confidentiality review before any use")
 
             analysis.claims.append(InterviewClaim(
-                id="iq%02d" % counter,
+                id="%s-iq%02d" % (id_stem, counter),
                 text=sentence,
                 speaker=seg.speaker,
                 timestamp=seg.stamp(),

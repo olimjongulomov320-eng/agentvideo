@@ -131,6 +131,29 @@ class TestResearchRun(unittest.TestCase):
         self.assertIn("login wall", src)
         self.assertIn("SOURCE_INACCESSIBLE", src)
 
+    def test_report_and_csv_carry_citations(self):
+        fetcher = html_pages({"https://acme.uz": FIRM_HTML})
+        res = research_firm("Acme", "https://acme.uz", fetcher=fetcher)
+        md = report_markdown(res)
+        self.assertIn("https://acme.uz", md)
+        self.assertIn("Anti-fabrication", md)
+        csv_text = ledger_csv(res)
+        self.assertIn("source_url", csv_text.splitlines()[0])
+        self.assertIn("https://acme.uz", csv_text)
+
+    def test_no_website_recorded_as_gap(self):
+        res = research_firm("Acme", "", fetcher=html_pages({}))
+        self.assertTrue(any("No official website" in g for g in res.gaps))
+
+    def test_extra_urls_are_included(self):
+        fetcher = html_pages({"https://acme.uz": FIRM_HTML,
+                              "https://news.example/a": "<html><body><p>"
+                              "Acme Legal LLP announced a new office in 2026 in Tashkent."
+                              "</p></body></html>"})
+        res = research_firm("Acme", "https://acme.uz", extra_urls=["https://news.example/a"],
+                            fetcher=fetcher)
+        self.assertTrue(any(s.url == "https://news.example/a" for s in res.sources))
+
 
 class TestResponseDecoding(unittest.TestCase):
     """F7 regression: source text must survive the fetch byte-for-byte.
@@ -246,29 +269,6 @@ class TestDefaultFetcherKeepsUnicode(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"requests": fake}):
             result = research.default_fetcher("https://acme.uz")
         self.assertIn(self.CYR, result.text)
-
-    def test_report_and_csv_carry_citations(self):
-        fetcher = html_pages({"https://acme.uz": FIRM_HTML})
-        res = research_firm("Acme", "https://acme.uz", fetcher=fetcher)
-        md = report_markdown(res)
-        self.assertIn("https://acme.uz", md)
-        self.assertIn("Anti-fabrication", md)
-        csv_text = ledger_csv(res)
-        self.assertIn("source_url", csv_text.splitlines()[0])
-        self.assertIn("https://acme.uz", csv_text)
-
-    def test_no_website_recorded_as_gap(self):
-        res = research_firm("Acme", "", fetcher=html_pages({}))
-        self.assertTrue(any("No official website" in g for g in res.gaps))
-
-    def test_extra_urls_are_included(self):
-        fetcher = html_pages({"https://acme.uz": FIRM_HTML,
-                              "https://news.example/a": "<html><body><p>"
-                              "Acme Legal LLP announced a new office in 2026 in Tashkent."
-                              "</p></body></html>"})
-        res = research_firm("Acme", "https://acme.uz", extra_urls=["https://news.example/a"],
-                            fetcher=fetcher)
-        self.assertTrue(any(s.url == "https://news.example/a" for s in res.sources))
 
 
 # --------------------------------------------------------------------- discovery

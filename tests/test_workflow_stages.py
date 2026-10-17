@@ -335,6 +335,29 @@ class TestInterviewAnalysis(unittest.TestCase):
         payload = json.load(open(paths["interview_analysis.json"], encoding="utf-8"))
         self.assertEqual(payload["claim_count"], len(self.analysis.claims))
 
+    def test_claim_ids_are_scoped_to_the_source_file(self):
+        """F4: two interviews must never share a claim id.
+
+        The chronology cites claim ids; when every transcript numbered its
+        statements from ``iq01``, two interviewees looked like one source
+        contradicting itself.
+        """
+        other = os.path.join(self.tmp, "second.srt")
+        with open(other, "w", encoding="utf-8") as fh:
+            fh.write(SRT.replace("Ahmed Karimov", "Dilnoza Yusupova"))
+        a = transcripts.analyse_file(self.path, language="en")
+        b = transcripts.analyse_file(other, language="en")
+        self.assertTrue(a.claims and b.claims)
+        for analysis, stem in ((a, "interview"), (b, "second")):
+            self.assertTrue(all(c.id.startswith(stem + "-")
+                                for c in analysis.claims),
+                            "a claim id must name the file it came from")
+            self.assertTrue(all(q["id"].startswith(stem + "-")
+                                for q in analysis.questions))
+        overlap = {c.id for c in a.claims} & {c.id for c in b.claims}
+        self.assertEqual(overlap, set(),
+                         "claim ids collided across transcripts: %s" % overlap)
+
     def test_no_speakers_labels_produce_a_gap(self):
         p = os.path.join(self.tmp, "nolabels.txt")
         with open(p, "w", encoding="utf-8") as fh:
