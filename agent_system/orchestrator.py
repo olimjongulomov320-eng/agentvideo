@@ -50,6 +50,16 @@ class JobRequest:
     extra_urls: List[str] = field(default_factory=list)
     preview_only: bool = False
     auto_approve: bool = True
+    # ---- staged (human-gated) workflow, see agent_system/pipeline.py ----
+    # When set, the job stops after research for a human decision and never
+    # writes a script or starts a render before each gate is approved. The
+    # default keeps the original single-pass behaviour byte-for-byte.
+    staged: bool = False
+    # Transcript files the operator already holds. Only ever read locally; the
+    # workflow never contacts an interviewee.
+    transcripts: List[str] = field(default_factory=list)
+    # The concept the operator approved, e.g. "A". Empty until approved.
+    concept: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -82,6 +92,12 @@ def sanitize_request(raw: Dict[str, Any]) -> JobRequest:
                       if isinstance(u, str) and u.strip()][:5]
     req.new_office = (req.new_office or "").strip()[:200]
     req.event_date = (req.event_date or "").strip()[:60]
+    # Transcripts are local file paths chosen by the operator. They are
+    # normalised but never fetched from a URL.
+    req.transcripts = [t.strip() for t in (req.transcripts or [])
+                       if isinstance(t, str) and t.strip()][:24]
+    req.concept = (req.concept or "").strip()[:40]
+    req.staged = bool(req.staged)
     return req
 
 
@@ -374,7 +390,15 @@ def run_job(cfg, store, job_id: str, *args, **kwargs) -> Dict[str, Any]:
     Cancellation is part of normal operation, so it is converted into a clean
     terminal status here rather than being allowed to escape as an exception:
     callers (the bot, the CLI) only ever see a result dictionary.
+
+    A job created with ``staged=True`` (see :mod:`agent_system.pipeline`) is
+    handed to the staged workflow, which stops at explicit human gates. Every
+    other caller keeps the original single-pass behaviour unchanged.
     """
+    request = args[0] if args else kwargs.get("request")
+    if isinstance(request, JobRequest) and request.staged:
+        from . import pipeline          # imported lazily: pipeline imports this module
+        return pipeline.advance_staged(cfg, store, job_id, *args, **kwargs)
     try:
         return _run_job_impl(cfg, store, job_id, *args, **kwargs)
     except Cancelled:

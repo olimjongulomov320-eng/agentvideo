@@ -340,6 +340,174 @@ def cmd_chronology(args) -> int:
     return 0
 
 
+def _print_job_plan(cfg, store, job_id: str) -> None:
+    """Show where a staged job stands: completed steps and the next gate."""
+    from . import pipeline
+
+    job = store.get(job_id)
+    if not job:
+        print("no such job: %s" % job_id)
+        return
+    job_dir = cfg.job_dir(job_id)
+    state = pipeline.read_state(job_dir)
+    step = pipeline.current_step(state)
+    print("Job %s" % job_id)
+    print("  firm        : %s" % job.get("firm_name"))
+    print("  status      : %s  (%s)" % (job.get("status"), job.get("message") or "-"))
+    print("  progress    : %s%%" % job.get("progress"))
+    print("  completed   : %s" % (", ".join(state.get("completed") or []) or "none"))
+    print("  next step   : %s" % step)
+    approvals = state.get("approvals") or {}
+    if approvals:
+        for gate in sorted(approvals):
+            when = (approvals[gate] or {}).get("at", "?")
+            extra = (approvals[gate] or {}).get("concept", "")
+            print("  approved    : %s at %s%s"
+                  % (gate, when, (" (concept %s)" % extra) if extra else ""))
+    if state.get("transcripts"):
+        print("  transcripts : %d supplied" % len(state["transcripts"]))
+    summary_path = os.path.join(job_dir, "research_summary.json")
+    if os.path.isfile(summary_path):
+        with open(summary_path, "r", encoding="utf-8") as fh:
+            summary = json.load(fh)
+        print("  evidence    : %d sources read, %d blocked, %d claims (%d public-safe)"
+              % (summary.get("sources_read", 0), summary.get("sources_blocked", 0),
+                 summary.get("claims_total", 0), summary.get("claims_public_safe", 0)))
+        print("  chronology  : %d dated, %d undated, %d conflict(s)"
+              % (summary.get("dated_events", 0), summary.get("undated_claims", 0),
+                 len(summary.get("conflicts") or [])))
+    print("  output dir  : %s" % job_dir)
+    if step != "done":
+        gate = pipeline.gate_for_step(step)
+        if gate and gate not in approvals:
+            print("  waiting for : approval of %s  (status %s)"
+                  % (gate, pipeline.gate_status(step)))
+    else:
+        print("  waiting for : nothing — every staged step has run")
+
+
+def cmd_run_staged(args) -> int:
+    """Run the staged workflow until it pauses at the first human gate."""
+    from . import pipeline
+
+    cfg = _cfg()
+    cfg.ensure_dirs()
+    store = JobStore(cfg.db_path)
+    raw = {
+        "firm_name": args.firm, "website": args.website or "",
+        "facebook": args.facebook or "", "language": args.language,
+        "style": args.style, "duration_sec": args.duration,
+        "new_office": args.new_office or "", "event_date": args.event_date or "",
+        "extra_urls": args.extra or [], "staged": True,
+    }
+    req = sanitize_request(raw)
+    job_id = store.create(0, req.style, req.language, req.firm_name,
+                          req.duration_sec, None, params=req.to_dict())
+    print("staged job %s created for %s" % (job_id, req.firm_name))
+    print("! the job stops after research; no script is written and no video is "
+          "rendered until you approve each gate.")
+    return _advance_and_report(cfg, store, job_id, args)
+
+
+def cmd_review(args) -> int:
+    """Record a human decision on a paused staged job and advance it."""
+    from . import pipeline
+
+    cfg = _cfg()
+    store = JobStore(cfg.db_path)
+    job_id = args.job
+    if args.show:
+        _print_job_plan(cfg, store, job_id)
+        return 0
+    job = store.get(job_id)
+    if not job:
+        print("no such job: %s" % job_id)
+        return 1
+    kwargs = {}
+    if args.approve_research:
+        kwargs["approve_research"] = True
+    if args.concept:
+        kwargs["approve_concept"] = args.concept
+    if args.approve_storyboard:
+        kwargs["approve_storyboard"] = True
+    if args.transcript:
+        kwargs["transcripts"] = list(args.transcript)
+    if args.note:
+        kwargs["note"] = args.note
+    if args.force:
+        kwargs["force"] = True
+    if not kwargs:
+        print("nothing to do: pass --approve-research, --concept, "
+              "--approve-storyboard, --transcript or --show")
+        return 1
+    # A staged job may be resumed from the database alone: params are stored.
+    return _advance_and_report(cfg, store, job_id, args, **kwargs)
+
+
+def _advance_and_report(cfg, store, job_id: str, args, **kwargs) -> int:
+    from . import pipeline
+
+    request = None
+    job = store.get(job_id) or {}
+    raw = job.get("params_json") or "{}"
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = {}
+    if isinstance(raw, dict):
+        request = sanitize_request(raw)
+
+    def progress(stage: str, pct: int, msg: str) -> None:
+        print("[%3d%%] %-10s %s" % (pct, stage, redact(msg)))
+
+    overrides = {}
+    if getattr(args, "fast", False):
+        from .config import PREVIEW_PROFILE
+        overrides = dict(PREVIEW_PROFILE)
+        print("! --fast is a PREVIEW profile (%dx%d@%d) — NOT a deliverable."
+              % (overrides["width"], overrides["height"], overrides["fps"]))
+    no_render = bool(getattr(args, "no_render", False))
+    if no_render:
+        os.environ.setdefault("AGENT_NO_RENDER", "1")
+
+    try:
+        result = pipeline.advance_staged(
+            cfg, store, job_id, request, progress=progress,
+            overrides=overrides,
+            enable_preview=not getattr(args, "no_preview", False),
+            enable_render=not no_render, **kwargs)
+    except pipeline.PipelineError as exc:
+        print("cannot advance job %s: %s" % (job_id, exc))
+        return 1
+
+    print()
+    print("Job %s → %s" % (job_id, result.get("status")))
+    if result.get("gate"):
+        print("Paused at the %s gate." % result["gate"])
+    for a in result.get("artifacts", []):
+        print("  artifact    : %s" % a)
+    if result.get("output"):
+        print("  video       : %s" % result["output"])
+    for w in result.get("warnings", []):
+        print("  warning     : %s" % w)
+    for e in result.get("errors", []):
+        print("  error       : %s" % e)
+    if result.get("review"):
+        print()
+        print(pipeline.format_review(result["review"]))
+    print("Run `python3 -m agent_system job-status %s` for the full picture."
+          % job_id)
+    return 0 if result.get("status") in ("completed",) or result.get("gate") else 1
+
+
+def cmd_job_status(args) -> int:
+    cfg = _cfg()
+    store = JobStore(cfg.db_path)
+    _print_job_plan(cfg, store, args.job)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent_system",
                                 description="Law-firm research & video production system")
@@ -431,6 +599,55 @@ def build_parser() -> argparse.ArgumentParser:
     ch.add_argument("--firm", required=True)
     ch.add_argument("--out", default="", help="output directory")
     ch.set_defaults(func=cmd_chronology)
+
+    # ---- staged (human-gated) documentary workflow ----
+    def _add_common(sp):
+        sp.add_argument("--fast", action="store_true",
+                        help="PREVIEW profile (not a deliverable); for smoke runs")
+        sp.add_argument("--no-preview", dest="no_preview", action="store_true",
+                        help="do not render the short preview clip")
+        sp.add_argument("--no-render", dest="no_render", action="store_true",
+                        help="research/script only: never start ffmpeg")
+
+    rs = sub.add_parser("run-staged",
+                        help="start the staged workflow; it pauses after research "
+                             "and writes no script or video until you approve")
+    rs.add_argument("--firm", required=True)
+    rs.add_argument("--website", default="")
+    rs.add_argument("--facebook", default="")
+    rs.add_argument("--extra", action="append", default=[])
+    rs.add_argument("--language", default="en")
+    rs.add_argument("--style", default="motion",
+                    choices=["motion", "illustrated", "blender3d"])
+    rs.add_argument("--duration", type=int, default=140)
+    rs.add_argument("--event-date", dest="event_date", default="")
+    rs.add_argument("--new-office", dest="new_office", default="")
+    _add_common(rs)
+    rs.set_defaults(func=cmd_run_staged)
+
+    rv = sub.add_parser("review",
+                        help="record a human decision on a paused job and advance it")
+    rv.add_argument("job", help="job id, e.g. J7F3K2Q9")
+    rv.add_argument("--show", action="store_true",
+                    help="only print the job's current state")
+    rv.add_argument("--approve-research", dest="approve_research",
+                    action="store_true",
+                    help="the public evidence is sufficient to continue")
+    rv.add_argument("--concept", default="",
+                    help="approve a concept by id (e.g. A, B, C) before scripting")
+    rv.add_argument("--approve-storyboard", dest="approve_storyboard",
+                    action="store_true", help="approve rendering the full video")
+    rv.add_argument("--transcript", action="append", default=[],
+                    help="a transcript file you already hold (never fetched)")
+    rv.add_argument("--note", default="", help="why the decision was taken")
+    rv.add_argument("--force", action="store_true",
+                    help="resume a job the service marked failed after a restart")
+    _add_common(rv)
+    rv.set_defaults(func=cmd_review)
+
+    js = sub.add_parser("job-status", help="show a staged job's phase and gates")
+    js.add_argument("job")
+    js.set_defaults(func=cmd_job_status)
     return p
 
 

@@ -189,22 +189,35 @@ def build_timeline(firm_name: str, claims: Iterable[Any]) -> Timeline:
 
 
 def _detect_conflicts(timeline: Timeline) -> None:
-    """Report claims that state *different* years for what looks like one event."""
+    """Report claims that state *different* years for what looks like one event.
+
+    Synonyms are grouped, because a disagreement is easy to miss when the two
+    sources use different verbs for the same event: "was founded in 2010" and
+    "was established in 2011" is exactly the conflict a human must resolve, and
+    keying on the literal word stem would never compare them.
+    """
+    groups = (
+        ("founding", ("found", "established", "establish", "formed", "incorporated",
+                      "founded")),
+        ("office opening", ("open", "opened", "opening", "moved", "relocat")),
+        ("recognition", ("award", "awarded", "ranked", "rank", "recognised",
+                         "recognized", "winner")),
+    )
     buckets: Dict[str, Dict[int, List[str]]] = {}
     for entry in timeline.entries:
         low = entry.event.lower()
-        for key in ("found", "establish", "open", "award", "rank"):
-            if re.search(r"\b%s" % key, low):
-                buckets.setdefault(key, {}).setdefault(entry.year, []).append(
+        for label, keys in groups:
+            if any(re.search(r"\b%s" % re.escape(k), low) for k in keys):
+                buckets.setdefault(label, {}).setdefault(entry.year, []).append(
                     entry.claim_ids[0] if entry.claim_ids else entry.event[:40])
-    for key, years in sorted(buckets.items()):
+    for label, years in sorted(buckets.items()):
         if len(years) > 1:
             detail = "; ".join("%d: %s" % (y, ", ".join(ids))
                                for y, ids in sorted(years.items()))
             timeline.conflicts.append(
                 "Possible disagreement about '%s' across years — %s. Resolve with "
                 "a dated document before the film claims either date."
-                % (key, detail))
+                % (label, detail))
 
 
 def timeline_markdown(timeline: Timeline,

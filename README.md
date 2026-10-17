@@ -75,7 +75,8 @@ and serves as the reference example of the agent's output quality.
 | `AGENT_TESTS.md` | Real tests executed against this installation, with results |
 | `TEST_REPORT.md` | Python `agent_system/` test report (172 tests, automated/mocked/manual) |
 | `VIDEO_PIPELINE.md` | **Full-HD render pipeline**: root-cause analysis, design system, profiles, QA heuristics and calibration, commands, limitations |
-| `WORKFLOW.md` | **Staged documentary workflow (A–G)**: what is implemented in code, evidence rules, interview procedure, transcription limits, CLI commands, privacy/permission handling |
+| `WORKFLOW.md` | **Staged documentary workflow (A–G)**: what is implemented in code, evidence rules, interview procedure, the three approval gates, transcription limits, CLI commands, privacy/permission handling |
+| `TRANSCRIPTION.md` | **Local speech-to-text decision (Uzbek/Russian)**: verified machine facts, comparison of Vosk / whisper.cpp / whisper variants, licences, memory limits, exact install commands (not yet run), and what must change in code |
 | `TELEGRAM_SETUP.md` | BotFather setup, numeric user IDs, `.env`, access control (exactly two users) |
 | `MAC_LAUNCH.md` | macOS commands: styles/health/run-job/selftest/serve, no-render mode |
 | `VPS_DEPLOYMENT.md` | Linux VPS deployment with systemd, security, backups |

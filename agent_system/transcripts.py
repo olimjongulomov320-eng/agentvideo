@@ -59,8 +59,25 @@ ENGINE_CAPABILITIES: Dict[str, Dict[str, Any]] = {
                        "note": "pip install faster-whisper (CTranslate2)"},
     "mlx-whisper": {"langs": ("en", "ru", "uz"), "uz_quality": "low",
                     "note": "pip install mlx-whisper (Apple silicon)"},
-    "vosk": {"langs": ("ru",), "uz_quality": "unsupported",
-             "note": "vosk has a Russian model; no Uzbek model"},
+    # Corrected 2026-10-17: this entry previously read {"langs": ("ru",),
+    # "uz_quality": "unsupported", "note": "vosk has a Russian model; no Uzbek
+    # model"}, which is false. Vosk publishes a dedicated Uzbek model
+    # (vosk-model-small-uz-0.22, 49 MB, Apache-2.0) with a vendor-reported WER of
+    # 13.54 (CV) / 12.92 (IS2AI USC), sourced from
+    # https://alphacephei.com/vosk/models. Vosk is therefore the only
+    # whisper-alternative here with *native* Uzbek support rather than
+    # multilingual transfer.
+    #
+    # Two caveats are recorded here rather than hidden:
+    #   * the figures are vendor-published and have NOT been verified on this
+    #     machine (no engine is installed);
+    #   * transcribe_audio() has no vosk invocation branch yet, so an installed
+    #     vosk still fails loudly with "no implemented invocation".
+    "vosk": {"langs": ("en", "ru", "uz"), "uz_quality": "medium",
+             "note": "Kaldi-based, fully offline; model is a separate download. "
+                     "Uzbek: vosk-model-small-uz-0.22 (49 MB, Apache-2.0, "
+                     "vendor WER 13.54 CV / 12.92 IS2AI). Needs 16 kHz mono WAV "
+                     "input; pin 'vosk==0.3.44' (0.3.45 ships no macOS wheel)."},
 }
 
 # Hedges and recollection markers. A sentence containing one of these is a

@@ -20,11 +20,25 @@ import time
 from typing import Any, Dict, List, Optional
 
 STATES = (
-    "queued", "researching", "awaiting_approval",
-    "rendering", "completed", "failed", "cancelled",
+    "queued", "researching", "awaiting_research_review", "awaiting_concept_review",
+    "awaiting_approval", "rendering", "completed", "failed", "cancelled",
 )
-ACTIVE_STATES = ("queued", "researching", "awaiting_approval", "rendering")
+
+# States where the *machine* is working. A service restart during one of these
+# means the work did not finish, so they are the ones recovery marks failed.
+WORKING_STATES = ("queued", "researching", "rendering")
+
+# States where the job is waiting for a human decision. They survive a restart
+# untouched (a paused job is not a crashed job) and are still "in flight" for
+# duplicate-prevention purposes, exactly like the pre-existing approval gate.
+PAUSED_STATES = ("awaiting_research_review", "awaiting_concept_review",
+                 "awaiting_approval")
+
+ACTIVE_STATES = WORKING_STATES + PAUSED_STATES
 TERMINAL_STATES = ("completed", "failed", "cancelled")
+
+# Statuses a staged job may legitimately be resumed from.
+RESUMABLE_STATES = ("queued",) + PAUSED_STATES
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -223,6 +237,57 @@ class JobStore(object):
             fields["progress"] = max(0, min(100, int(progress)))
         self.update(job_id, **fields)
         self.log_event(job_id, "status", "%s: %s" % (status, message))
+
+    def claim_transition(self, job_id: str, expected: Any, to: str,
+                         message: str = "",
+                         progress: Optional[int] = None) -> bool:
+        """Atomically move a job out of an expected status, at most once.
+
+        This is the duplicate-execution guard. The check and the write are a
+        single conditional ``UPDATE``, so if two callers (a retried Telegram
+        delivery, a double-clicked resume, two threads) try to run the same
+        phase for the same job, exactly one of them gets ``True`` and the other
+        gets ``False`` and must stop. A read-then-write pair cannot guarantee
+        that under SQLite's connection-per-call model.
+
+        ``expected`` may be a single status or an iterable of acceptable ones.
+        Returns ``True`` only for the caller that performed the transition.
+        """
+        if to not in STATES:
+            raise ValueError("unknown status: %r" % (to,))
+        if isinstance(expected, str):
+            wanted = (expected,)
+        else:
+            wanted = tuple(expected)
+        for want in wanted:
+            if want not in STATES:
+                raise ValueError("unknown status: %r" % (want,))
+        if not wanted:
+            return False
+
+        marks = ",".join("?" for _ in wanted)
+        sets = "status=?, message=?, updated_at=?"
+        vals: List[Any] = [to, message, time.time()]
+        if progress is not None:
+            sets += ", progress=?"
+            vals.append(max(0, min(100, int(progress))))
+        # Placeholders appear in SQL order: the SET list, then ``id=?``, then the
+        # IN (...) list. Binding these out of order silently matched no row.
+        vals.append(job_id)
+        vals.extend(wanted)
+
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "UPDATE jobs SET %s WHERE id=? AND status IN (%s)" % (sets, marks),
+                vals)
+            conn.commit()
+            won = cur.rowcount > 0
+        finally:
+            conn.close()
+        if won:
+            self.log_event(job_id, "status", "%s: %s" % (to, message))
+        return won
 
     def request_cancel(self, job_id: str) -> bool:
         job = self.get(job_id)

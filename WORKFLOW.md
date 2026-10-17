@@ -21,8 +21,12 @@ history: where a fact is unknown, the system records a gap.
 | **C. Interview preparation** | Per-role questionnaires driven by the evidence gaps, each with what it closes and what would corroborate it | `agent_system/interviews.py` | Implemented |
 | **D. Transcription & interview analysis** | Turn a recording or supplied transcript into attributed, timestamped statements | `agent_system/transcripts.py` | Implemented (analysis); see transcription limits below |
 | **E. Chronology & story selection** | Cited, confidence-labelled timeline; documented history separated from interpretation | `agent_system/chronology.py` | Implemented |
-| **F. Human review & approval gates** | Stop before the script; permission checklist; confidentiality quarantine | `agent_system/orchestrator.py` (approval callback) + `permission_checklist_*.md` | Implemented (approval gate already existed; checklist added) |
+| **F. Human review & approval gates** | Stop before the script; permission checklist; confidentiality quarantine | `agent_system/pipeline.py` (three gates) + `agent_system/orchestrator.py` (approval callback) + `permission_checklist_*.md` | Implemented |
 | **G. Final script & production** | Script, storyboard, subtitles, render | `agent_system/story.py`, `agent_system/video/` | Pre-existing |
+
+Stage F is now enforced by the staged runner (see §4): research, concepts and the
+storyboard each require an explicit human approval, and no script or video is
+produced before the concept is approved.
 
 ---
 
@@ -87,7 +91,78 @@ the newer columns still load.
 
 ---
 
-## 4. Interview procedure (human-in-the-loop)
+## 4. The gated staged workflow (`run-staged`)
+
+`run-job` is the original single-pass runner: it renders in one go and stops once
+at the storyboard approval callback. The **staged runner** splits the same work
+into five steps with three mandatory human gates, so that a script can never be
+written before the evidence has been reviewed by a person.
+
+```
+evidence ──► GATE 1 research ──► transcripts ──► concepts ──► GATE 2 concept
+   ──► script ──► storyboard ──► GATE 3 storyboard ──► render
+```
+
+```bash
+# start (pauses at gate 1; nothing is written before it is approved)
+python3 -m agent_system run-staged --firm "Firm Name" --website https://example.uz --no-render
+
+# look at the current state and what the job is waiting for
+python3 -m agent_system job-status JOBID
+python3 -m agent_system review JOBID --show
+
+# gate 1 -> approve the evidence, optionally attaching interview transcripts
+python3 -m agent_system review JOBID --approve-research
+python3 -m agent_system review JOBID --transcript path/to/interview.srt
+
+# gate 2 -> approve a concept by name
+python3 -m agent_system review JOBID --concept A
+
+# gate 3 -> approve the storyboard, then render
+python3 -m agent_system review JOBID --approve-storyboard
+```
+
+Behaviour that is enforced in code and covered by tests:
+
+- **A gate cannot be skipped.** Advancing to the next step without the matching
+  `--approve-*` flag does nothing and re-reports the same gate.
+- **No script and no video before concept approval.** Asserted by test.
+- **State lives in the job's own directory** (`pipeline_state.json` records the
+  completed steps, the approvals, the supplied transcripts and the revision
+  number). `work/render_spec.json` re-persists the effective render spec so a job
+  resumed in a later process renders identically.
+- **A job is resumable** after a crash; `recover_interrupted` only fails the
+  in-flight `researching`/`rendering` states, so a job paused at a human gate
+  survives a restart.
+- **Duplicate execution is prevented** by an atomic claim (`JobStore.
+  claim_transition`): two concurrent advances produce exactly one worker, and the
+  other reports `busy`.
+- **Re-runs do not overwrite approved work.** Regenerated material goes to
+  `revisions/rN/`, and an existing questionnaire is never clobbered.
+- **`--fast`** uses the preview profile and is explicitly labelled *not a
+  deliverable*; `enable_render=False` also disables the preview.
+
+### The `auto_approve` field is inert (investigated 2026-10-17)
+
+Every stored job carries `"auto_approve": true` in `params_json`, which looks
+alarming next to jobs that are waiting for approval. It was traced to the end:
+
+- `JobRequest.auto_approve` defaults to `True` and is persisted by `to_dict()`.
+- The **only** reader of an `auto_approve` value is the *CLI argument*
+  `args.auto_approve` (`cli.py`), not the request field.
+- The bot's gate is the injected `approve` callback that waits for a real
+  Telegram button press; the staged gates are driven only by the explicit
+  `--approve-*` arguments and the approvals map in `pipeline_state.json`.
+
+So the stored field **cannot bypass any approval gate**. It is a latent hazard
+rather than an active one: because every existing job already stores `true`, any
+future change that wired the field to a gate would silently auto-approve all of
+them. Six regression tests now pin the inert behaviour in both directions, so
+such a change would fail loudly. No safety behaviour was changed.
+
+---
+
+## 5. Interview procedure (human-in-the-loop)
 
 The agent **never contacts anybody**. It does not send messages, make calls, or
 post anything.
@@ -118,8 +193,12 @@ machine in front of you. On the machine used for this run:
 - **Uzbek is a known weak point** of every whisper-family model (low-resource
   language): expect errors in names, dates and legal terms. The text must be
   verified against the audio by a speaker of the language before it is quoted.
-- Free options if you choose to install one: `whisper.cpp` (binary + GGML model),
-  or `pip install faster-whisper`. No paid service is used by this project.
+  Vosk is the exception — it publishes a dedicated Uzbek model
+  (`vosk-model-small-uz-0.22`), though `transcribe_audio()` cannot drive Vosk
+  until an invocation branch is added.
+- Free, fully local options and the exact (not yet run) install commands are
+  compared in **[`TRANSCRIPTION.md`](TRANSCRIPTION.md)**. No paid service is used
+  by this project.
 
 The analysis half does not depend on any of this: it works on a human-supplied
 SRT, VTT, plain-text or JSON transcript, preserving timestamps and marking
@@ -127,7 +206,7 @@ uncertain names and dates for correction.
 
 ---
 
-## 5. Privacy, permissions and confidentiality
+## 6. Privacy, permissions and confidentiality
 
 - **Quotation is not granted by being interviewed.** Consent to record and
   consent to quote are separate, statement-by-statement, and recorded in the
@@ -144,7 +223,7 @@ uncertain names and dates for correction.
 
 ---
 
-## 6. Testing
+## 7. Testing
 
 ```bash
 python3 -W ignore::ResourceWarning -m unittest discover -s tests -t .
@@ -170,7 +249,7 @@ regression tests in `tests/test_workflow_stages.py` covering:
 
 ---
 
-## 7. Sample workflow (synthetic test data only)
+## 8. Sample workflow (synthetic test data only)
 
 The stages were exercised end to end with synthetic fixtures — a fictional
 "Acme Legal LLP" ledger, a fabricated interview transcript, and invented gap
@@ -179,7 +258,7 @@ The sample proves the rules hold; it is not evidence about any real firm.
 
 ---
 
-## 8. What remains unavailable / needs a human
+## 9. What remains unavailable / needs a human
 
 - **No local speech-to-text engine** on this machine — install one or supply
   transcripts.

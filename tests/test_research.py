@@ -152,5 +152,181 @@ class TestResearchRun(unittest.TestCase):
         self.assertTrue(any(s.url == "https://news.example/a" for s in res.sources))
 
 
+# --------------------------------------------------------------------- discovery
+HOME_WITH_NAV = """<html><head><title>GSP Law Firm</title></head><body>
+<h1>GSP</h1><p>Founded in 2010.</p>
+<nav>
+ <a href="/nav/about">About</a>
+ <a href="/team">Our team</a>
+ <a href="/news?page=2">News</a>
+ <a href="/practice-areas">Practice areas</a>
+ <a href="https://facebook.com/gsp">Facebook</a>
+ <a href="mailto:info@gsp.uz">Mail</a>
+ <a href="/brochure.pdf">Brochure</a>
+ <a href="#top">Top</a>
+ <a href="/">Home</a>
+</nav></body></html>"""
+
+SITEMAP_INDEX = """<?xml version="1.0"?><sitemapindex>
+<sitemap><loc>https://gsp.uz/sitemap-pages.xml</loc></sitemap>
+</sitemapindex>"""
+
+SITEMAP_PAGES = """<?xml version="1.0"?><urlset>
+<loc>https://gsp.uz/</loc>
+<loc>https://gsp.uz/history</loc>
+<loc>https://gsp.uz/awards</loc>
+</urlset>"""
+
+
+class _CountingFetcher(object):
+    """A canned fetcher that also counts requests per URL."""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = {}
+
+    def __call__(self, url):
+        from agent_system.research import FetchResult, SOURCE_ERROR, SOURCE_INSPECTED
+        self.calls[url] = self.calls.get(url, 0) + 1
+        if url in self.pages:
+            return FetchResult(True, 200, self.pages[url], SOURCE_INSPECTED,
+                               "ftp", url)
+        return FetchResult(False, 404, "", SOURCE_ERROR, "HTTP 404", url)
+
+
+class TestDiscovery(unittest.TestCase):
+    def test_links_are_canonicalised_deduped_and_same_site_only(self):
+        from agent_system.research import extract_links
+        links = extract_links(HOME_WITH_NAV, "https://gsp.uz")
+        self.assertIn("https://gsp.uz/nav/about", links)
+        self.assertIn("https://gsp.uz/team", links)
+        # a query string identifies the same page, so it is stripped
+        self.assertIn("https://gsp.uz/news", links)
+        self.assertNotIn("https://gsp.uz/news?page=2", links)
+        # external hosts, mailto, documents, fragments and the page itself
+        self.assertFalse(any("facebook.com" in u for u in links))
+        self.assertFalse(any(u.startswith("mailto:") for u in links))
+        self.assertFalse(any(u.endswith(".pdf") for u in links))
+        self.assertFalse(any("#" in u for u in links))
+        self.assertNotIn("https://gsp.uz/", links)
+        self.assertEqual(len(links), len(set(links)))
+
+    def test_sitemap_splits_pages_from_nested_sitemaps(self):
+        from agent_system.research import parse_sitemap
+        pages, nested = parse_sitemap(SITEMAP_INDEX, "https://gsp.uz")
+        self.assertEqual(pages, [])
+        self.assertEqual(nested, ["https://gsp.uz/sitemap-pages.xml"])
+        pages, nested = parse_sitemap(SITEMAP_PAGES, "https://gsp.uz")
+        self.assertIn("https://gsp.uz/history", pages)
+        self.assertEqual(nested, [])
+
+    def test_ranking_puts_history_before_contacts(self):
+        from agent_system.research import rank_url
+        order = sorted(["https://gsp.uz/contacts", "https://gsp.uz/history",
+                        "https://gsp.uz/team", "https://gsp.uz/awards",
+                        "https://gsp.uz/random-page"],
+                       key=rank_url)
+        self.assertLess(order.index("https://gsp.uz/history"),
+                        order.index("https://gsp.uz/contacts"))
+        self.assertLess(order.index("https://gsp.uz/team"),
+                        order.index("https://gsp.uz/awards"))
+        self.assertTrue(order[-1].endswith("random-page"))
+
+    def test_russian_paths_are_recognised(self):
+        from agent_system.research import rank_url
+        self.assertLess(rank_url("https://gsp.uz/о-нас")[0],
+                        rank_url("https://gsp.uz/что-то-ещё")[0])
+
+    def test_discovery_uses_real_links_and_never_guesses_when_it_can(self):
+        from agent_system.research import discover_targets
+        pages = {
+            "https://gsp.uz": HOME_WITH_NAV,
+            "https://gsp.uz/sitemap.xml": SITEMAP_PAGES,
+            "https://gsp.uz/robots.txt": "User-agent: *\nSitemap: https://gsp.uz/sitemap.xml\n",
+        }
+        f = _CountingFetcher(pages)
+        targets, notes, prefetched = discover_targets("https://gsp.uz", f,
+                                                     lambda m: None)
+        urls = [u for _l, u in targets]
+        self.assertEqual(urls[0], "https://gsp.uz")
+        self.assertIn("https://gsp.uz/history", urls)      # from the sitemap
+        self.assertIn("https://gsp.uz/team", urls)         # from the nav link
+        self.assertFalse(any("guess" in l for l, _u in targets))
+        self.assertTrue(any("same-site link" in n for n in notes))
+        self.assertTrue(any("sitemap" in n.lower() for n in notes))
+
+    def test_homepage_is_fetched_only_once(self):
+        from agent_system.research import discover_targets
+        pages = {"https://gsp.uz": HOME_WITH_NAV,
+                 "https://gsp.uz/sitemap.xml": SITEMAP_PAGES}
+        f = _CountingFetcher(pages)
+        discover_targets("https://gsp.uz", f, lambda m: None)
+        self.assertEqual(f.calls.get("https://gsp.uz"), 1,
+                         "discovery must not double-fetch the homepage")
+
+    def test_falls_back_to_guesses_and_says_so(self):
+        from agent_system.research import discover_targets
+        f = _CountingFetcher({"https://bare.uz": "<html><title>Bare</title>"
+                                                 "<body><p>Founded in 2011.</p></body></html>"})
+        targets, notes, _pre = discover_targets("https://bare.uz", f, lambda m: None)
+        labels = [l for l, _u in targets]
+        self.assertTrue(all(l.startswith("site-guess-") for l in labels[1:]))
+        self.assertTrue(any("GUESS" in n for n in notes),
+                        "guessing must be disclosed, not silent")
+
+    def test_sitemap_index_is_followed(self):
+        from agent_system.research import discover_targets
+        pages = {
+            "https://gsp.uz": "<html><title>G</title><body><p>x</p></body></html>",
+            "https://gsp.uz/sitemap.xml": SITEMAP_INDEX,
+            "https://gsp.uz/sitemap-pages.xml": SITEMAP_PAGES,
+        }
+        f = _CountingFetcher(pages)
+        targets, _notes, _pre = discover_targets("https://gsp.uz", f, lambda m: None)
+        self.assertIn("https://gsp.uz/history", [u for _l, u in targets])
+
+    def test_page_count_is_capped(self):
+        from agent_system.research import discover_targets
+        many = "".join('<a href="/p%d">p</a>' % i for i in range(40))
+        f = _CountingFetcher({"https://gsp.uz":
+                              "<html><title>G</title><body>%s</body></html>" % many})
+        targets, _notes, _pre = discover_targets("https://gsp.uz", f, lambda m: None,
+                                                 max_pages=5)
+        self.assertLessEqual(len(targets), 5)
+
+    def test_total_failure_is_survivable_and_explicit(self):
+        from agent_system.research import discover_targets
+        def boom(url):
+            raise RuntimeError("network down")
+        targets, notes, prefetched = discover_targets("https://gsp.uz", boom,
+                                                     lambda m: None)
+        self.assertTrue(targets)                     # still plans the homepage
+        self.assertTrue(notes)                       # and says what failed
+        self.assertTrue(any("could not be fetched" in n
+                            or "GUESS" in n for n in notes))
+        self.assertIsInstance(prefetched, dict)
+
+    def test_research_records_404_pages_as_gaps_not_content(self):
+        from agent_system.research import research_firm
+        f = _CountingFetcher({"https://bare.uz":
+                              "<html><title>Bare</title><body><p>Founded in 2011.</p></body></html>"})
+        res = research_firm("Bare", "https://bare.uz", fetcher=f)
+        self.assertFalse(any("/about" in c.source_url for c in res.claims),
+                         "an unreadable page must never produce claims")
+        self.assertTrue(any("/about" in g for g in res.gaps),
+                        "the attempt must be recorded as a gap")
+        self.assertTrue(any("iscovery" in n for n in res.notes))
+
+    def test_discovery_notes_become_part_of_the_report(self):
+        from agent_system.research import research_firm, report_markdown
+        f = _CountingFetcher({"https://gsp.uz": HOME_WITH_NAV,
+                              "https://gsp.uz/sitemap.xml": SITEMAP_PAGES,
+                              "https://gsp.uz/team": "<html><title>Team</title>"
+                                                     "<body><p>12 lawyers.</p></body></html>"})
+        res = research_firm("GSP", "https://gsp.uz", fetcher=f)
+        self.assertTrue(any("iscovery" in n for n in res.notes))
+        self.assertIn("Discovery", report_markdown(res))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -11,11 +11,14 @@ Guarantees
 """
 import csv
 import io
+import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlsplit
 
 # ----------------------------------------------------------------- evidence classes
 VERIFIED = "VERIFIED"
@@ -289,6 +292,268 @@ def candidate_statements(ex: _Extractor, limit: int = 25) -> List[Tuple[str, str
     return out[:limit]
 
 
+# ----------------------------------------------------------------- discovery
+# How many pages to read per site, and how deep to follow a sitemap index.
+MAX_PAGES = 12
+MAX_NESTED_SITEMAPS = 3
+
+# Link targets that are never readable evidence about the firm's history.
+_LINK_SKIP_EXT = (
+    ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".ico", ".bmp",
+    ".mp4", ".mp3", ".webm", ".mov", ".avi", ".zip", ".rar", ".gz", ".tar",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".css", ".js",
+)
+_LINK_SKIP_SCHEME = ("mailto:", "tel:", "javascript:", "data:", "#", "sms:")
+
+# Path fragments that usually carry firm history, best first. These only ORDER
+# links the site actually published: they never invent one. Matched case-
+# insensitively against the URL, so both English and Russian paths are covered.
+_URL_HINTS = (
+    (0, ("about", "history", "istoriya", "истори", "о-нас", "о-компан", "o-nas",
+         "kompaniya", "company", "firm", "firma")),
+    (1, ("team", "people", "lawyer", "partner", "attorney", "komanda", "команд",
+         "сотрудник", "founder", "bio", "sotrudnik")),
+    (2, ("news", "press", "novosti", "новост", "publication", "publikacii",
+         "blog", "insight", "media", "event", "sobitiya")),
+    (3, ("award", "recognition", "ranking", "achievement", "nagrad", "награжд",
+         "laureat", "rating")),
+    (4, ("practice", "service", "expertise", "uslugi", "услуг", "deyatelnost")),
+    (5, ("contact", "kontakt", "контакт", "address")),
+)
+_GUESSED_PATHS = ("about", "history", "team", "news", "awards", "contacts")
+
+_LOC_RE = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.I)
+_SITEMAP_RE = re.compile(r"(?im)^\s*sitemap\s*:\s*(\S+)\s*$")
+
+
+class _LinkExtractor(HTMLParser):
+    """Collect ``<a href>`` values.
+
+    Kept separate from :class:`_Extractor` so that claim extraction is not
+    affected by link markup (anchors are navigation, not statements).
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hrefs: List[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("script", "style", "noscript"):
+            self._skip += 1
+            return
+        if tag == "a" and not self._skip:
+            href = (dict(attrs).get("href") or "").strip()
+            if href:
+                self.hrefs.append(href)
+
+    def handle_endtag(self, tag):
+        if tag in ("script", "style", "noscript"):
+            self._skip = max(0, self._skip - 1)
+
+
+def _host_key(url: str) -> str:
+    """Host without a leading ``www.``, for same-site comparison."""
+    netloc = urlsplit(url or "").netloc.lower()
+    if "@" in netloc:                      # strip any userinfo
+        netloc = netloc.rsplit("@", 1)[1]
+    if ":" in netloc:
+        netloc = netloc.split(":", 1)[0]
+    return netloc[4:] if netloc.startswith("www.") else netloc
+
+
+def _canonical(url: str) -> str:
+    """Absolute, fragment-free, query-free page URL; '' when not fetchable.
+
+    Dropping the query and fragment is deliberate: ``?utm_source=...`` and
+    ``#team`` are the same page, and fetching them repeatedly would waste the
+    page budget and look like load to the server.
+    """
+    raw = (url or "").strip()
+    if not raw or raw.startswith(_LINK_SKIP_SCHEME):
+        return ""
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https"):
+        return ""
+    path = parts.path or "/"
+    if path.lower().endswith(_LINK_SKIP_EXT):
+        return ""
+    return "%s://%s%s" % (parts.scheme.lower(), parts.netloc.lower(), path)
+
+
+def extract_links(html: str, base_url: str) -> List[str]:
+    """Same-site page links from one page, de-duplicated, in document order."""
+    ex = _LinkExtractor()
+    try:
+        ex.feed(html or "")
+    except Exception:
+        return []
+    base_host = _host_key(base_url)
+    base_key = _canonical(base_url)
+    out: List[str] = []
+    seen = set()
+    for href in ex.hrefs:
+        absolute = urljoin(base_url, href)
+        u = _canonical(absolute)
+        if not u or _host_key(u) != base_host:
+            continue
+        if u == base_key or u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
+
+
+def parse_sitemap(xml: str, base_url: str) -> Tuple[List[str], List[str]]:
+    """Return ``(page_urls, nested_sitemap_urls)`` from a sitemap or index."""
+    pages: List[str] = []
+    nested: List[str] = []
+    for raw in _LOC_RE.findall(xml or ""):
+        u = _canonical(urljoin(base_url, raw.strip()))
+        if not u:
+            continue
+        if u.lower().endswith((".xml", ".xml.gz")):
+            nested.append(u)
+        elif u not in pages:
+            pages.append(u)
+    return pages, nested
+
+
+def rank_url(url: str) -> Tuple[int, int, str]:
+    """Sort key for a discovered URL: history-relevant first, then shallow."""
+    low = url.lower()
+    for rank, hints in _URL_HINTS:
+        if any(h in low for h in hints):
+            depth = low.rstrip("/").count("/") - 2
+            return (rank, max(0, depth), low)
+    depth = low.rstrip("/").count("/") - 2
+    return (len(_URL_HINTS), max(0, depth), low)
+
+
+def discover_targets(website: str, fetch: Callable[[str], FetchResult],
+                     report: Callable[[str], None],
+                     max_pages: int = MAX_PAGES
+                     ) -> Tuple[List[Tuple[str, str]], List[str], Dict[str, FetchResult]]:
+    """Build the fetch plan from the site's own published structure.
+
+    Order of preference:
+
+    1. the homepage;
+    2. pages the homepage actually links to (same site);
+    3. pages listed in ``sitemap.xml`` (following a sitemap index) and any
+       ``Sitemap:`` line in ``robots.txt``;
+    4. **only if all of that yields nothing**, the conventional paths
+       (``/about``, ``/history``, …), which are recorded as *guesses* so the
+       report can say so instead of implying the pages were known to exist.
+
+    Returns ``(targets, notes, prefetched)``. ``prefetched`` reuses the homepage
+    response in the main read loop, so no page is fetched twice.
+    """
+    targets: List[Tuple[str, str]] = []
+    notes: List[str] = []
+    prefetched: Dict[str, FetchResult] = {}
+    if not website:
+        return targets, notes, prefetched
+
+    base = website.rstrip("/")
+    targets.append(("site-home", website))
+
+    discovered: List[str] = []
+
+    # 1) homepage links
+    home = None
+    try:
+        home = fetch(website)
+    except Exception as exc:
+        notes.append("Discovery: homepage could not be fetched (%s); falling "
+                     "back to conventional paths." % exc)
+    if home is not None:
+        prefetched[website] = home
+        if home.ok and home.text:
+            links = extract_links(home.text, home.final_url or website)
+            discovered.extend(links)
+            notes.append("Discovery: %d same-site link(s) on the homepage."
+                         % len(links))
+        else:
+            notes.append("Discovery: homepage not readable (%s), so its links "
+                         "could not be discovered." % (home.note or home.state))
+
+    # 2) sitemap.xml, plus any sitemap declared in robots.txt
+    sitemap_urls = [base + "/sitemap.xml"]
+    try:
+        robots = fetch(base + "/robots.txt")
+    except Exception:
+        robots = None
+    if robots is not None and robots.ok and robots.text:
+        declared = [m.strip() for m in _SITEMAP_RE.findall(robots.text)]
+        for d in declared:
+            u = _canonical(urljoin(base + "/", d))
+            if u and u not in sitemap_urls:
+                sitemap_urls.append(u)
+        if declared:
+            notes.append("Discovery: robots.txt declares %d sitemap(s)."
+                         % len(declared))
+
+    seen_sitemaps = set()
+    queue = list(sitemap_urls)[:1 + MAX_NESTED_SITEMAPS]
+    sitemap_pages = 0
+    while queue:
+        sm = queue.pop(0)
+        if sm in seen_sitemaps:
+            continue
+        seen_sitemaps.add(sm)
+        try:
+            got = prefetched.get(sm) or fetch(sm)
+        except Exception:
+            got = None
+        if got is None or not got.ok or not got.text:
+            continue
+        pages, nested = parse_sitemap(got.text, got.final_url or sm)
+        if pages:
+            sitemap_pages += len(pages)
+            discovered.extend(pages)
+        for n in nested:
+            if n not in seen_sitemaps and len(seen_sitemaps) < 1 + MAX_NESTED_SITEMAPS:
+                queue.append(n)
+    if sitemap_pages:
+        notes.append("Discovery: sitemap.xml listed %d page(s)." % sitemap_pages)
+    else:
+        notes.append("Discovery: no readable sitemap.xml (a site without one is "
+                     "normal).")
+
+    # 3) rank and cap
+    unique: List[str] = []
+    seen = set()
+    for u in discovered:
+        if u == _canonical(website) or u in seen:
+            continue
+        seen.add(u)
+        unique.append(u)
+    unique.sort(key=rank_url)
+
+    guessed = False
+    if not unique:
+        guessed = True
+        for guess in _GUESSED_PATHS:
+            unique.append(base + "/" + guess)
+        notes.append("Discovery: no links or sitemap entries were found, so the "
+                     "conventional paths %s were tried as GUESSES. They may not "
+                     "exist; any that fail are recorded as gaps, not as content."
+                     % ", ".join("/" + g for g in _GUESSED_PATHS))
+
+    for u in unique[:max(0, max_pages - 1)]:
+        if guessed:
+            label = "site-guess-" + u.rstrip("/").rsplit("/", 1)[-1]
+        else:
+            tail = u.rstrip("/").rsplit("/", 1)[-1] or "home"
+            label = "site-" + re.sub(r"[^a-z0-9]+", "-", tail.lower())[:30]
+        targets.append((label, u))
+    notes.append("Discovery: reading %d page(s) for this site."
+                 % (len(targets) - 1))
+    report("discovered %d page(s) to read" % (len(targets) - 1))
+    return targets, notes, prefetched
+
+
 def classify_source_kind(url: str) -> str:
     u = (url or "").lower()
     if "facebook.com" in u:
@@ -402,9 +667,14 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
 
     targets: List[Tuple[str, str]] = []
     if website:
-        targets.append(("site-home", website))
-        for guess in ("about", "history", "team", "news", "awards", "contacts"):
-            targets.append(("site-" + guess, website.rstrip("/") + "/" + guess))
+        discovered, discovery_notes, prefetched = discover_targets(
+            website, fetch, report)
+        targets.extend(discovered)
+        # Discovery notes belong with the research notes: they state exactly how
+        # the pages were found, which a reader needs in order to judge coverage.
+        result.notes.extend(discovery_notes)
+    else:
+        prefetched = {}
     if facebook:
         targets.append(("facebook", facebook))
     for i, u in enumerate(extra_urls or []):
@@ -417,7 +687,11 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
         source = Source(id="S%02d" % sid, kind=classify_source_kind(url), url=url)
         report("fetching %s" % label)
         try:
-            fr = fetch(url)
+            # Reuse the homepage response found during discovery instead of
+            # requesting the same page a second time.
+            fr = prefetched.get(url)
+            if fr is None:
+                fr = fetch(url)
         except Exception as exc:
             fr = FetchResult(False, None, state=SOURCE_ERROR, note="fetcher error: %s" % exc)
 
@@ -585,3 +859,40 @@ def result_to_dict(result: ResearchResult) -> Dict[str, Any]:
         "gaps": list(result.gaps),
         "notes": list(result.notes),
     }
+
+
+def result_from_dict(d: Optional[Dict[str, Any]]) -> ResearchResult:
+    """Rebuild a :class:`ResearchResult` from :func:`result_to_dict` output.
+
+    Used to resume a paused job from the ``research_raw.json`` it wrote, so a
+    human can review findings today and continue the job days later without
+    re-fetching anything (the sources are re-read by the *source*, not by this
+    loader).
+
+    Deliberately tolerant: unknown keys are ignored and missing keys take their
+    dataclass default, so a file written by an older version still loads. It
+    never invents a source or a claim — a field that was not recorded comes back
+    empty, which downstream code already treats as "not established".
+    """
+    d = d or {}
+    src_fields = set(Source.__dataclass_fields__)
+    clm_fields = set(Claim.__dataclass_fields__)
+    sources = [Source(**{k: v for k, v in s.items() if k in src_fields})
+               for s in (d.get("sources") or []) if isinstance(s, dict)]
+    claims = [Claim(**{k: v for k, v in c.items() if k in clm_fields})
+              for c in (d.get("claims") or []) if isinstance(c, dict)]
+    return ResearchResult(
+        firm_name=str(d.get("firm_name") or ""),
+        sources=sources,
+        claims=claims,
+        gaps=[str(g) for g in (d.get("gaps") or [])],
+        notes=[str(n) for n in (d.get("notes") or [])],
+    )
+
+
+def load_raw(path: str) -> ResearchResult:
+    """Load ``research_raw.json`` written by the workflow. Missing file → empty."""
+    if not os.path.isfile(path):
+        return ResearchResult(firm_name="")
+    with open(path, "r", encoding="utf-8") as fh:
+        return result_from_dict(json.load(fh))
