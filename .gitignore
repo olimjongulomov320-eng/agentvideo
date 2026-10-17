@@ -9,3 +9,23 @@
 # output/jobs/<id>/ (delivery_report.md, evidence_ledger.csv, preview.mp4, ...)
 # are real deliverables in this project.
 qa/
+
+# ---------------------------------------------------------------------------
+# Runtime service state — machine-local, not source and not a deliverable.
+#
+# These files are written continuously by the running bot/service. They change
+# on every interaction, are not reproducible from the repository, and the job
+# database and log have contained a real personal Telegram user id. They stay
+# on disk (the service needs them) but are intentionally untracked.
+#
+# The SQLite sidecars (-shm shared-memory index, -wal write-ahead log) are part
+# of the same database and must be excluded together with it: committing a
+# database without its WAL can look like data loss.
+#
+# output/jobs/<id>/ is still tracked; this only excludes the database and logs.
+# ---------------------------------------------------------------------------
+output/jobs.sqlite3
+output/jobs.sqlite3-shm
+output/jobs.sqlite3-wal
+output/logs/bot.log
+output/logs/*.log
