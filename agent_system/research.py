@@ -78,6 +78,15 @@ class Claim:
     safe_for_public: bool = False
     relevance: str = ""
     needs: str = ""
+    # ---- extended evidence-ledger fields (workflow stage B) ----
+    # Every one of these is derived from the source itself. None is inferred,
+    # and an empty value means "not established", never "assumed".
+    excerpt: str = ""          # verbatim passage the claim was taken from
+    source_date: str = ""      # when the source was published, if it says so
+    event_date: str = ""       # year the SOURCE states for the event (not inferred)
+    confidence: str = ""       # confidence level and its limitation
+    contradiction: str = ""    # conflicting evidence, if any was found
+    privacy_review: str = ""   # permission / publication requirement
 
 
 @dataclass
@@ -301,6 +310,24 @@ def same_registrable_domain(a: str, b: str) -> bool:
     return bool(norm(a)) and norm(a) == norm(b)
 
 
+def source_key(source: str) -> str:
+    """A key identifying the *publisher* of a source, for independence checks.
+
+    Two URLs on the same website are one publisher, so they cannot corroborate
+    each other. Non-URL sources (for example an interviewee's name) are used
+    as-is.
+    """
+    raw = (source or "").strip()
+    if not raw:
+        return ""
+    if re.match(r"^https?://", raw, re.I):
+        host = re.sub(r"^https?://", "", raw.lower()).split("/")[0]
+        host = host.split(":")[0]
+        parts = [p for p in host.split(".") if p]
+        return ".".join(parts[-2:]) if len(parts) >= 2 else host
+    return raw.lower()
+
+
 def classify_claim(text: str, kind: str, source_url: str,
                    official_domains: List[str]) -> Tuple[str, bool, str]:
     """Return (evidence_class, safe_for_public, needs)."""
@@ -319,6 +346,41 @@ def classify_claim(text: str, kind: str, source_url: str,
                     "Firm self-description — safe only as the firm's own account, not as fact.")
         return (SINGLE_SOURCE, False, "Single external mention — corroborate before public use.")
     return (UNVERIFIED, False, "Unclassified — review manually.")
+
+
+# --------------------------------------------------- extended ledger helpers
+CONFIDENCE_NOTE: Dict[str, str] = {
+    VERIFIED: "Confirmed by two or more independent sources.",
+    CORROBORATED: "Supported by more than one source.",
+    SINGLE_SOURCE: "Single source only — not independently confirmed.",
+    UNVERIFIED: "No supporting evidence located.",
+    CONFLICTING: "Sources disagree; unresolved.",
+    UNAVAILABLE: "Source could not be read; nothing verified.",
+}
+
+
+def confidence_note(evidence_class: str) -> str:
+    """The limitation attached to an evidence class, in one line."""
+    return CONFIDENCE_NOTE.get(evidence_class, "Unclassified — review manually.")
+
+
+def stated_year(text: str) -> str:
+    """The earliest 4-digit year the *source itself states*, or ''.
+
+    This is a year the text mentions, not a confirmed event date, and the
+    chronology labels it exactly that way. Nothing is inferred from context.
+    """
+    years = [int(y) for y in re.findall(r"\b(1[89]\d{2}|20\d{2})\b", text or "")]
+    return str(min(years)) if years else ""
+
+
+def privacy_requirement(kind: str, safe_for_public: bool) -> str:
+    """What must happen before this claim may be published."""
+    if kind == "case_figure":
+        return "Client matter — client clearance required before any public use."
+    if safe_for_public:
+        return "Cleared for public use by classification."
+    return "Not cleared for public use — human review required before publication."
 
 
 # ----------------------------------------------------------------- orchestration
@@ -383,7 +445,11 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
             result.claims.append(Claim(
                 id="C%03d" % cid, text=text[:500], source_id=source.id,
                 source_url=url, page_title=source.title, evidence_class=evc,
-                safe_for_public=safe, relevance=kind, needs=needs))
+                safe_for_public=safe, relevance=kind, needs=needs,
+                excerpt=text[:2000],
+                confidence=confidence_note(evc),
+                event_date=stated_year(text),
+                privacy_review=privacy_requirement(kind, safe)))
 
     if not website:
         result.gaps.append("No official website supplied — research limited to supplied links.")
@@ -403,10 +469,14 @@ def ledger_csv(result: ResearchResult) -> str:
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["claim_id", "claim", "evidence_class", "safe_for_public",
-                "source_id", "source_url", "page_title", "relevance", "needs"])
+                "source_id", "source_url", "page_title", "relevance", "needs",
+                "excerpt", "source_date", "event_date", "confidence",
+                "contradiction", "privacy_review"])
     for c in result.claims:
         w.writerow([c.id, c.text, c.evidence_class, "yes" if c.safe_for_public else "no",
-                    c.source_id, c.source_url, c.page_title, c.relevance, c.needs])
+                    c.source_id, c.source_url, c.page_title, c.relevance, c.needs,
+                    c.excerpt, c.source_date, c.event_date, c.confidence,
+                    c.contradiction, c.privacy_review])
     return buf.getvalue()
 
 
@@ -439,7 +509,24 @@ def report_markdown(result: ResearchResult, generated_at: Optional[str] = None) 
                 c.id, c.text[:160].replace("|", "/"), c.evidence_class,
                 "yes" if c.safe_for_public else "no", c.source_id, c.source_url))
     lines.append("")
-    lines.append("## 3. Gaps and blocked sources")
+    lines.append("## 3. Verification and permission detail")
+    lines.append("")
+    if not result.claims:
+        lines.append("_No claims to detail._")
+    else:
+        lines.append("| ID | Class | Confidence / limitations | Event year as stated by source | Privacy / permission |")
+        lines.append("|----|-------|--------------------------|-------------------------------|----------------------|")
+        for c in result.claims:
+            lines.append("| %s | %s | %s | %s | %s |" % (
+                c.id, c.evidence_class, c.confidence or "-",
+                c.event_date or "not stated",
+                (c.privacy_review or "-").replace("|", "/")))
+    lines.append("")
+    lines.append("_An empty cell means \"not established\" — never \"assumed\". A year \"as "  # noqa: E501
+                 "stated by source\" is what the page says, not a confirmed date; the "  # noqa: E501
+                 "chronology labels it accordingly._")
+    lines.append("")
+    lines.append("## 4. Gaps and blocked sources")
     lines.append("")
     if result.gaps:
         for g in result.gaps:
@@ -447,7 +534,7 @@ def report_markdown(result: ResearchResult, generated_at: Optional[str] = None) 
     else:
         lines.append("- None recorded.")
     lines.append("")
-    lines.append("## 4. Notes")
+    lines.append("## 5. Notes")
     lines.append("")
     for n in result.notes:
         lines.append("- %s" % n)
@@ -455,6 +542,39 @@ def report_markdown(result: ResearchResult, generated_at: Optional[str] = None) 
     lines.append("> **Anti-fabrication:** every line above traces to a source row. "
                  "Where a source could not be read, the gap is stated and nothing was invented.")
     return "\n".join(lines) + "\n"
+
+
+def claims_from_ledger_csv(text: str) -> List[Claim]:
+    """Rebuild Claim objects from a ledger CSV written by :func:`ledger_csv`.
+
+    Lets a later stage (chronology, interview planning) work from the saved
+    ledger without re-fetching anything. Unknown columns are ignored, so an
+    older CSV still loads.
+    """
+    claims: List[Claim] = []
+    reader = csv.DictReader(io.StringIO(text or ""))
+    for row in reader:
+        if not row:
+            continue
+        safe_raw = (row.get("safe_for_public") or "").strip().lower()
+        claims.append(Claim(
+            id=row.get("claim_id") or "",
+            text=row.get("claim") or "",
+            source_id=row.get("source_id") or "",
+            source_url=row.get("source_url") or "",
+            page_title=row.get("page_title") or "",
+            evidence_class=(row.get("evidence_class") or UNVERIFIED).strip(),
+            safe_for_public=safe_raw in ("yes", "true", "1"),
+            relevance=row.get("relevance") or "",
+            needs=row.get("needs") or "",
+            excerpt=row.get("excerpt") or "",
+            source_date=row.get("source_date") or "",
+            event_date=row.get("event_date") or "",
+            confidence=row.get("confidence") or "",
+            contradiction=row.get("contradiction") or "",
+            privacy_review=row.get("privacy_review") or "",
+        ))
+    return claims
 
 
 def result_to_dict(result: ResearchResult) -> Dict[str, Any]:

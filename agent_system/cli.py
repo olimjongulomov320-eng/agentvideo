@@ -229,6 +229,117 @@ def cmd_render_qa(args) -> int:
     return 0 if tech.get("width") else 1
 
 
+def cmd_transcribe_info(args) -> int:
+    """Report, honestly, which local speech-to-text engines exist on this machine."""
+    from .transcripts import detect_speech_backends
+    info = detect_speech_backends()
+    print(json.dumps(info, indent=2, ensure_ascii=False))
+    if not info["available"]:
+        print("\nAudio cannot be transcribed here. Supply the interview as SRT / "
+              "VTT / TXT / JSON and run 'analyse-interview' on it.")
+    return 0 if info["available"] else 1
+
+
+def cmd_analyse_interview(args) -> int:
+    """Parse a supplied transcript, extract attributed statements, write findings."""
+    from .transcripts import analyse_file, write_analysis
+    out_dir = args.out or os.path.join(os.path.dirname(os.path.abspath(args.path)), "analysis")
+    analysis = analyse_file(args.path, language=args.language or "")
+    paths = write_analysis(out_dir, analysis)
+    print("Transcript : %s (%s, produced by %s)" % (
+        analysis.source_name, analysis.language or "language unspecified",
+        analysis.produced_by))
+    print("Speakers   : %s" % (", ".join(analysis.speakers) or "not labelled"))
+    print("Statements : %d attributed (all SINGLE-SOURCE until corroborated)"
+          % len(analysis.claims))
+    print("Questions  : %d recorded as context" % len(analysis.questions))
+    print("Inaudible  : %d segment(s) — recorded as gaps, not guessed" %
+          len(analysis.inaudible_segments))
+    print("Privacy    : %s" % (", ".join(analysis.privacy_flags) or "no markers found "
+                               "(this does NOT mean the material is cleared)"))
+    print("Flagged    : %s" % ", ".join(
+        "%s=%d" % (k, len(v)) for k, v in sorted(analysis.flagged_terms.items())) or "none")
+    for g in analysis.gaps:
+        print("  gap      : %s" % g)
+    print()
+    for label, path in paths.items():
+        print("  wrote    : %s" % path)
+    print("\nNOTE: no statement is cleared for publication by this command.")
+    return 0
+
+
+def cmd_interview_plans(args) -> int:
+    """Build per-role interview questionnaires, driven by the evidence gaps."""
+    from .interviews import build_all, write_plans
+    from .research import claims_from_ledger_csv, ResearchResult
+    from .story import extract_facts
+
+    missing: List[str] = []
+    open_questions: List[str] = []
+    if args.ledger:
+        with open(args.ledger, "r", encoding="utf-8", errors="replace") as fh:
+            claims = claims_from_ledger_csv(fh.read())
+        res = ResearchResult(firm_name=args.firm)
+        res.claims = claims
+        facts = extract_facts(res, args.firm, event_date=args.event_date or "",
+                              new_office=args.new_office or "")
+        missing = facts.missing()
+        open_questions = ["No claim in the ledger establishes '%s'" % m for m in missing]
+        if not claims:
+            open_questions.append("The ledger contained no claims at all.")
+    else:
+        missing = ["founding_year", "practice_areas", "new_office", "achievement"]
+        open_questions = ["No evidence ledger supplied — every core fact is open."]
+
+    plans = build_all(args.firm, missing_facts=missing, open_questions=open_questions,
+                      interviewees={})
+    out_dir = args.out or os.path.join(os.getcwd(), "interviews")
+    written = write_plans(out_dir, plans, force=bool(args.force))
+    print("Firm        : %s" % args.firm)
+    print("Gaps driven : %s" % (", ".join(missing) or "none"))
+    print("Output dir  : %s" % out_dir)
+    for role, path in written.items():
+        if path:
+            print("  wrote     : %s" % path)
+        else:
+            print("  skipped   : %s (already exists — pass --force to overwrite)"
+                  % role)
+    print("\nNOTE: the agent does not contact or interview anyone. A human "
+          "conducts the interview and supplies the recording or transcript.")
+    return 0
+
+
+def cmd_chronology(args) -> int:
+    """Build a cited chronology from a saved evidence ledger."""
+    from .chronology import build_timeline, write_timeline
+    from .research import claims_from_ledger_csv
+
+    ledger = args.ledger
+    if os.path.isdir(ledger):
+        ledger = os.path.join(ledger, "evidence_ledger.csv")
+    if not os.path.exists(ledger):
+        print("ledger not found: %s" % ledger)
+        return 1
+    with open(ledger, "r", encoding="utf-8", errors="replace") as fh:
+        claims = claims_from_ledger_csv(fh.read())
+    timeline = build_timeline(args.firm, claims)
+    out_dir = args.out or os.path.dirname(os.path.abspath(ledger))
+    paths = write_timeline(out_dir, timeline)
+    print("Claims read    : %d" % len(claims))
+    print("Dated entries  : %d (%d documented)" % (
+        len(timeline.entries), sum(1 for e in timeline.entries if e.documented)))
+    print("Undated claims : %d (kept, not dated by guesswork)" % len(timeline.undated))
+    print("Contradictions : %d" % len(timeline.conflicts))
+    for c in timeline.conflicts:
+        print("  conflict     : %s" % c)
+    for g in timeline.gaps:
+        print("  gap          : %s" % g)
+    print()
+    for label, path in paths.items():
+        print("  wrote        : %s" % path)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent_system",
                                 description="Law-firm research & video production system")
@@ -287,6 +398,39 @@ def build_parser() -> argparse.ArgumentParser:
     rqa.add_argument("--profile", default="production", choices=["production", "preview"])
     rqa.add_argument("--out", default="")
     rqa.set_defaults(func=cmd_render_qa)
+
+    sub.add_parser("transcribe-info",
+                   help="report which local speech-to-text engines exist "
+                        "(no network, no paid API)").set_defaults(func=cmd_transcribe_info)
+
+    ai = sub.add_parser("analyse-interview",
+                        help="parse a supplied transcript (SRT/VTT/TXT/JSON) and "
+                             "extract attributed, timestamped statements")
+    ai.add_argument("path", help="the transcript file the user supplied")
+    ai.add_argument("--language", default="", choices=["", "en", "ru", "uz"])
+    ai.add_argument("--out", default="", help="output directory for the analysis")
+    ai.set_defaults(func=cmd_analyse_interview)
+
+    ip = sub.add_parser("interview-plans",
+                        help="generate per-role interview questionnaires from the "
+                             "evidence gaps (never overwrites a finished plan)")
+    ip.add_argument("--firm", required=True)
+    ip.add_argument("--ledger", default="", help="evidence_ledger.csv used to derive gaps")
+    ip.add_argument("--event-date", dest="event_date", default="")
+    ip.add_argument("--new-office", dest="new_office", default="")
+    ip.add_argument("--out", default="", help="output directory (default ./interviews)")
+    ip.add_argument("--force", action="store_true",
+                    help="overwrite an existing questionnaire (do NOT use on a "
+                         "reviewed plan)")
+    ip.set_defaults(func=cmd_interview_plans)
+
+    ch = sub.add_parser("chronology",
+                        help="build a cited, confidence-labelled chronology from a "
+                             "saved evidence ledger")
+    ch.add_argument("ledger", help="evidence_ledger.csv, or a job directory containing it")
+    ch.add_argument("--firm", required=True)
+    ch.add_argument("--out", default="", help="output directory")
+    ch.set_defaults(func=cmd_chronology)
     return p
 
 
