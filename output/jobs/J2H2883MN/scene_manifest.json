@@ -1,0 +1,146 @@
+{
+  "firm": "GSP Law Firm",
+  "language": "uz",
+  "style": "motion",
+  "total_duration_sec": 90.0,
+  "generated_at": "2026-10-17T06:35:08",
+  "facts": {
+    "practice_areas": {
+      "value": "IT-право, корпоративное право, экономические споры.",
+      "source": "S01",
+      "confidence": "SINGLE-SOURCE"
+    }
+  },
+  "gaps": [
+    "founding_year",
+    "new_office",
+    "achievement"
+  ],
+  "scenes": [
+    {
+      "id": "sc1",
+      "key": "hook",
+      "kind": "statement",
+      "start": 0.0,
+      "dur": 9.18,
+      "heading": "",
+      "sub": "",
+      "narration": "Har kuni odamlar qonundan javob kutadi. Ba'zida bu javob juda kech keladi.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc2",
+      "key": "origin",
+      "kind": "timeline",
+      "start": 9.18,
+      "dur": 18.37,
+      "heading": "[tashkil etilgan yil — ochiq manbalarda topilmadi]",
+      "sub": "GSP Law Firm",
+      "narration": "GSP Law Firm o'z faoliyatini Toshkentda boshlagan. [tashkil etilgan yil — ochiq manbalarda topilmadi]",
+      "needs": [
+        "founding_year"
+      ],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": true,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc3",
+      "key": "practice",
+      "kind": "list",
+      "start": 27.55,
+      "dur": 13.78,
+      "heading": "Practice",
+      "sub": "IT-право, корпоративное право, экономические споры.",
+      "narration": "Firma qiyin yo'nalishni tanladi: IT-право, корпоративное право, экономические споры.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "https://gsplaw.co.uz",
+      "source_id": "S01",
+      "evidence": "SINGLE-SOURCE"
+    },
+    {
+      "id": "sc4",
+      "key": "achievements",
+      "kind": "stat",
+      "start": 41.33,
+      "dur": 13.78,
+      "heading": "Record",
+      "sub": "[tasdiqlangan natija — ochiq manbalarda topilmadi]",
+      "narration": "Manbalarda qayd etilgan natija: [tasdiqlangan natija — ochiq manbalarda topilmadi]",
+      "needs": [
+        "achievement"
+      ],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": true,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc5",
+      "key": "people",
+      "kind": "statement",
+      "start": 55.11,
+      "dur": 11.94,
+      "heading": "People",
+      "sub": "",
+      "narration": "Texnologiya ishni tezlashtiradi. Ishonchni esa odam quradi.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc6",
+      "key": "office",
+      "kind": "title",
+      "start": 67.05,
+      "dur": 13.78,
+      "heading": "[yangi ofis manzili — aniqlanishi kerak]",
+      "sub": "[yangi ofis manzili — aniqlanishi kerak]",
+      "narration": "Yangi ofis — keyingi bosqich uchun maydon.",
+      "needs": [
+        "new_office"
+      ],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": true,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    },
+    {
+      "id": "sc7",
+      "key": "closing",
+      "kind": "endcard",
+      "start": 80.83,
+      "dur": 9.18,
+      "heading": "GSP Law Firm",
+      "sub": "",
+      "narration": "GSP Law Firm. Ish davom etadi.",
+      "needs": [],
+      "transition": "fade",
+      "asset": null,
+      "placeholder": false,
+      "source": "",
+      "source_id": "",
+      "evidence": ""
+    }
+  ]
+}

@@ -1,0 +1,348 @@
+{
+  "firm_name": "GSP Law Firm",
+  "sources": [
+    {
+      "id": "S01",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz",
+      "title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "state": "INSPECTED",
+      "http_status": 200,
+      "note": "fetched 13559 bytes",
+      "fetched_at": 1792200905.861155,
+      "bytes_read": 13559
+    },
+    {
+      "id": "S02",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz/about",
+      "title": "",
+      "state": "ERROR",
+      "http_status": 404,
+      "note": "HTTP 404",
+      "fetched_at": 1792200906.255894,
+      "bytes_read": 9379
+    },
+    {
+      "id": "S03",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz/history",
+      "title": "",
+      "state": "ERROR",
+      "http_status": 404,
+      "note": "HTTP 404",
+      "fetched_at": 1792200906.598614,
+      "bytes_read": 9379
+    },
+    {
+      "id": "S04",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz/team",
+      "title": "",
+      "state": "ERROR",
+      "http_status": 404,
+      "note": "HTTP 404",
+      "fetched_at": 1792200906.9887009,
+      "bytes_read": 9379
+    },
+    {
+      "id": "S05",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz/news",
+      "title": "",
+      "state": "ERROR",
+      "http_status": 404,
+      "note": "HTTP 404",
+      "fetched_at": 1792200907.314789,
+      "bytes_read": 9379
+    },
+    {
+      "id": "S06",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz/awards",
+      "title": "",
+      "state": "ERROR",
+      "http_status": 404,
+      "note": "HTTP 404",
+      "fetched_at": 1792200907.71034,
+      "bytes_read": 9379
+    },
+    {
+      "id": "S07",
+      "kind": "website",
+      "url": "https://gsplaw.co.uz/contacts",
+      "title": "",
+      "state": "ERROR",
+      "http_status": 404,
+      "note": "HTTP 404",
+      "fetched_at": 1792200908.057125,
+      "bytes_read": 9379
+    }
+  ],
+  "claims": [
+    {
+      "id": "C001",
+      "text": "Актуальные новости о кибербезопасности, IT-праве и юридическом мире — 2025",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statistic_or_superlative",
+      "needs": "Firm's own figure/superlative — needs independent corroboration before public use."
+    },
+    {
+      "id": "C002",
+      "text": "Ведущая юридическая фирма Узбекистана. IT-право, корпоративное право, экономические споры.",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "description",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C003",
+      "text": "Узкопрофильная команда экспертов в сфере IT-права, корпоративного права и разрешения экономических споров",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C004",
+      "text": "GSP LAW — узкопрофильная юридическая фирма, специализирующаяся на комплексном правовом сопровождении IT-бизнеса, стартапов и коммерческих организаций в Узбекистане и за рубежом.",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C005",
+      "text": "Наша команда объединяет опытных адвокатов с глубокими знаниями в области киберправа, корпоративного права, налогового и банковского законодательства.",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C006",
+      "text": "Мы ставим интересы клиента на первое место, обеспечивая максимальную защиту прав и законных интересов в любой правовой ситуации.",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C007",
+      "text": "Комплексное юридическое сопровождение бизнеса по всем ключевым направлениям",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C008",
+      "text": "Результаты, которые говорят сами за себя",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C009",
+      "text": "Реальные результаты, которых мы добились для наших клиентов",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C010",
+      "text": "Каждый специалист имеет глубокую экспертизу в своей области права и реальный опыт работы",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C011",
+      "text": "Первая консультация — бесплатно. Мы ответим в течение часа.",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "statement",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C012",
+      "text": "Gulyamov, Sadikovand Partners",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C013",
+      "text": "Профессионализм. Доверие. Результат.",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C014",
+      "text": "Наша миссия",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C015",
+      "text": "Основатели и партнёры",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C016",
+      "text": "Области права",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C017",
+      "text": "Эффективность в цифрах",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C018",
+      "text": "Выигранные дела",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C019",
+      "text": "Наши адвокаты и юристы",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C020",
+      "text": "Право и технологии",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C021",
+      "text": "Свяжитесь с нами",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C022",
+      "text": "Задать вопрос",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "heading",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    },
+    {
+      "id": "C023",
+      "text": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "source_id": "S01",
+      "source_url": "https://gsplaw.co.uz",
+      "page_title": "Адвокатская фирма Ташкент – GSP Law онлайн консультация",
+      "evidence_class": "SINGLE-SOURCE",
+      "safe_for_public": false,
+      "relevance": "title",
+      "needs": "Firm self-description — safe only as the firm's own account, not as fact."
+    }
+  ],
+  "gaps": [
+    "Could not read site-about (https://gsplaw.co.uz/about): HTTP 404",
+    "Could not read site-history (https://gsplaw.co.uz/history): HTTP 404",
+    "Could not read site-team (https://gsplaw.co.uz/team): HTTP 404",
+    "Could not read site-news (https://gsplaw.co.uz/news): HTTP 404",
+    "Could not read site-awards (https://gsplaw.co.uz/awards): HTTP 404",
+    "Could not read site-contacts (https://gsplaw.co.uz/contacts): HTTP 404"
+  ],
+  "notes": [
+    "Only accessible public pages were read. Unreadable sources are listed as gaps; no content was inferred for them."
+  ]
+}
