@@ -45,17 +45,47 @@ def ffprobe_available() -> bool:
 
 
 # ----------------------------------------------------------------- frame encoding
+# Quality profiles. ``production`` is for the deliverable; ``preview`` is for a
+# fast look. Bitrate is not the quality lever here (the frames are rendered at
+# the target resolution); preset/CRF are.
+ENCODE_PROFILES = {
+    "production": {"crf": 18, "preset": "medium", "tune": "film"},
+    "preview": {"crf": 23, "preset": "veryfast", "tune": "fastdecode"},
+    "fast": {"crf": 23, "preset": "veryfast", "tune": "fastdecode"},
+}
+
+
 def encode_frames_to_video(frames: Iterable[Any], out_path: str, width: int,
-                           height: int, fps: int, crf: int = 20,
-                           preset: str = "veryfast", timeout: int = 1800) -> str:
-    """Pipe PIL frames (RGB) into ffmpeg as rawvideo → H.264 mp4."""
+                           height: int, fps: int, crf: Optional[int] = None,
+                           preset: Optional[str] = None, timeout: int = 1800,
+                           profile: Optional[str] = None) -> str:
+    """Pipe PIL frames (RGB) into ffmpeg as rawvideo → H.264 mp4.
+
+    ``crf``/``preset`` may be given explicitly; otherwise the ``profile``
+    (``production`` | ``preview``) selects them. The legacy positional signature
+    ``(frames, out_path, width, height, fps)`` keeps its historical defaults
+    (CRF 20 / veryfast) when neither is supplied.
+    """
+    prof = ENCODE_PROFILES.get((profile or "").strip().lower())
+    if crf is None:
+        crf = prof["crf"] if prof else 20
+    if preset is None:
+        preset = prof["preset"] if prof else "veryfast"
+    tune = prof["tune"] if prof else None
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     cmd = [
         FFMPEG, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "rawvideo", "-pix_fmt", "rgb24",
         "-s", "%dx%d" % (width, height), "-r", str(fps), "-i", "pipe:0",
         "-an", "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
-        "-pix_fmt", "yuv420p", "-movflags", "+faststart", out_path,
+    ]
+    if tune:
+        cmd += ["-tune", tune]
+    cmd += [
+        "-pix_fmt", "yuv420p",
+        "-profile:v", "high", "-level", "4.1",
+        "-g", str(max(1, int(fps * 2))),           # 2s keyframe interval
+        "-movflags", "+faststart", out_path,
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE)

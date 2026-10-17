@@ -1,1 +1,11 @@
 .env
+
+# Local QA workspace: rendered QA fixtures, extracted frames, contact sheets and
+# QA reports. These are build/QA artifacts (several MB of PNGs/MP4s) kept on disk
+# for review but intentionally untracked. Regenerate with:
+#     python3 -m agent_system render-qa
+#
+# NOTE: output/ is deliberately NOT ignored — committed job artifacts under
+# output/jobs/<id>/ (delivery_report.md, evidence_ledger.csv, preview.mp4, ...)
+# are real deliverables in this project.
+qa/

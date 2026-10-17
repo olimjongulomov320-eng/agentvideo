@@ -8,7 +8,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 ALLOWED_KINDS = ("statement", "timeline", "list", "stat", "title", "endcard",
-                 "photo", "illustration")
+                 "photo", "illustration",
+                 # composition kinds added with the design system
+                 "quote", "comparison", "process", "logo")
 ALLOWED_TRANSITIONS = ("fade", "dissolve", "wipe", "slide", "cut")
 ASPECTS = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080),
            "4:5": (1080, 1350)}
@@ -17,6 +19,8 @@ MAX_SCENES = 40
 MAX_SCENE_SEC = 120.0
 MIN_SCENE_SEC = 1.0
 NARRATION_MAX = 1200
+NEED_MAX = 60        # characters allowed per named evidence gap
+MAX_NEEDS = 8        # named evidence gaps allowed per scene
 
 
 class SpecError(ValueError):
@@ -74,6 +78,53 @@ def _check_text(value: Any, name: str, errors: List[str], max_len: int = 500) ->
     return value
 
 
+def _normalise_needs(value: Any) -> List[str]:
+    """Normalise a scene's named evidence gaps into a list of short tokens.
+
+    The story module emits ``needs`` as a comma-joined string (see
+    ``story.scene_text``) and the scene manifest stores the split list. Both
+    shapes are accepted here.
+
+    This field MUST survive normalisation: it is the caption the GAP banner
+    prints, so discarding it silently degrades an actionable gap
+    ("founding_year") into a vague one ("unverified content").
+    """
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        items: List[Any] = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        return []
+    out: List[str] = []
+    for item in items:
+        token = str(item).strip()
+        if token:
+            out.append(token[:NEED_MAX])
+        if len(out) >= MAX_NEEDS:
+            break
+    return out
+
+
+def gap_banner_text(scene: Dict[str, Any]) -> str:
+    """The exact caption the GAP banner draws for ``scene``.
+
+    Returns the specific missing evidence when the manifest names it, so the
+    film states *which* fact a human must supply. Falls back to a deliberately
+    generic phrase only when a scene is flagged as a placeholder without naming
+    what is missing. Returns "" for a scene with no declared gap, so verified
+    scenes are never marked.
+    """
+    if not scene.get("placeholder"):
+        return ""
+    named = scene.get("needs") or []
+    if isinstance(named, str):
+        named = [named]
+    text = ", ".join(str(n).strip() for n in named if str(n).strip())
+    return text or "unverified content"
+
+
 def validate_render_spec(raw: Dict[str, Any]) -> Tuple[RenderSpec, List[str]]:
     """Validate a raw dict. Returns (spec, errors). Raises only on hard failures."""
     errors: List[str] = []
@@ -108,6 +159,15 @@ def validate_render_spec(raw: Dict[str, Any]) -> Tuple[RenderSpec, List[str]]:
     width = _int("width", 128, 7680, dw)
     height = _int("height", 128, 7680, dh)
     fps = _int("fps", 8, 60, 30)
+
+    # H.264 (libx264, yuv420p) requires even dimensions; an odd value makes the
+    # encoder fail with a cryptic "incorrect parameters such as ... width or
+    # height" error. Snap to the nearest even number here so a hand-written
+    # manifest can never break the render.
+    if width % 2:
+        width += 1
+    if height % 2:
+        height += 1
 
     transition = str(raw.get("transition", "fade") or "fade").lower()
     if transition not in ALLOWED_TRANSITIONS:
@@ -158,7 +218,15 @@ def validate_render_spec(raw: Dict[str, Any]) -> Tuple[RenderSpec, List[str]]:
                                      errors, NARRATION_MAX),
             "transition": str(rs.get("transition", transition) or transition).lower(),
             "asset": rs.get("asset") if isinstance(rs.get("asset"), (str, type(None))) else None,
-            "placeholder": bool(rs.get("placeholder", False)),
+            # `needs` names what evidence is missing; the renderer prints it on
+            # the GAP banner. Keep it, or the banner degenerates to a generic
+            # phrase and the film stops saying which fact is unsupplied.
+            "needs": _normalise_needs(rs.get("needs")),
+            # Never *un*-flag a scene. A manifest that names gaps but forgets the
+            # placeholder flag is still a scene with missing evidence, so the
+            # banner is shown rather than a gap being silently hidden.
+            "placeholder": bool(rs.get("placeholder", False))
+                           or bool(_normalise_needs(rs.get("needs"))),
         }
         if scene["transition"] not in ALLOWED_TRANSITIONS:
             errors.append("scene %s: unknown transition %r" % (sid, scene["transition"]))

@@ -15,8 +15,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
 
-from . import common, draw
-from .spec import RenderSpec
+from . import common, design, draw
+from .spec import RenderSpec, gap_banner_text
 
 LIMITATIONS = [
     "Illustrations are procedurally drawn flat art (no commissioned artwork supplied).",
@@ -42,7 +42,9 @@ class IllusContext(object):
         self.spec = spec
         self.w, self.h = spec.width, spec.height
         self.fb = draw.FontBook(self.h)
+        self.theme = design.Theme(self.w, self.h, self.fb)
         self.asset_dir = asset_dir
+        self._sky_cache = None
 
     def asset(self, name: Optional[str]) -> Optional[str]:
         if not name:
@@ -54,6 +56,20 @@ class IllusContext(object):
             if os.path.isfile(p):
                 return p
         return None
+
+
+def _sky(ctx: "IllusContext") -> Image.Image:
+    """The static sky (gradient + sun) — built once, reused for every frame.
+
+    The previous version re-derived the gradient and, worse, a large Gaussian
+    glow for *every* frame. Caching it is what makes 1080p illustrated renders
+    practical.
+    """
+    if ctx._sky_cache is None:
+        img = draw.gradient((ctx.w, ctx.h), SKY_TOP, SKY_BOT, vertical=True)
+        img = _sun(img, ctx.w * 0.72, ctx.h * 0.27, ctx.w * 0.16, 0.9)
+        ctx._sky_cache = img
+    return ctx._sky_cache
 
 
 # ---------------------------------------------------------------- primitives
@@ -195,8 +211,7 @@ def render_illustration(ctx: IllusContext, scene: Dict[str, Any], t: float) -> I
     prog = draw.ease_in_out(max(0.0, min(1.0, t / dur)))
     cam = (t / dur) if dur > 0 else 0.0
 
-    img = draw.gradient((w, h), SKY_TOP, SKY_BOT, vertical=True)
-    img = _sun(img, w * (0.72 - 0.06 * cam), h * (0.26 + 0.03 * cam), w * 0.16, 0.5 + 0.5 * cam)
+    img = _sky(ctx).copy()
     d = ImageDraw.Draw(img, "RGBA")
 
     kind = scene["kind"]
@@ -264,8 +279,7 @@ def render_scene_frame(ctx: IllusContext, scene: Dict[str, Any], t: float) -> Im
     p = draw.ease_out(draw.ramp(t, 0.6, 0.8))
     if scene["kind"] not in ("endcard",):
         _headline(img, ctx, scene, p)
-    if scene.get("placeholder"):
-        _placeholder_mark(img, ctx, ", ".join(scene.get("needs") or []) or "unverified content")
+    _placeholder_mark(img, ctx, gap_banner_text(scene))
     draw.watermark(img, ctx.fb, ctx.spec.watermark)
     return img
 
@@ -307,7 +321,8 @@ class IllustratedBackend(object):
 
     def render(self, spec: RenderSpec, out_path: str, work_dir: str,
                asset_dir: str = "", cancel: Optional[Callable[[], bool]] = None,
-               progress: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
+               progress: Optional[Callable[[str, int], None]] = None,
+               profile: str = "production") -> Dict[str, Any]:
         if not common.ffmpeg_available():
             raise common.RenderError("ffmpeg is not available — cannot render illustrated 2D")
         os.makedirs(work_dir, exist_ok=True)
@@ -319,11 +334,12 @@ class IllustratedBackend(object):
                          int(100 * n / max(1, total)))
 
         if progress:
-            progress("illustrated 2D pass: %d scenes at %dx%d@%d" %
-                     (len(spec.scenes), spec.width, spec.height, spec.fps), 1)
+            progress("illustrated 2D pass: %d scenes at %dx%d@%d (%s)" %
+                     (len(spec.scenes), spec.width, spec.height, spec.fps, profile), 1)
         video_only = os.path.join(work_dir, "_video_only.mp4")
         common.encode_frames_to_video(iter_frames(ctx, spec.scenes, cancel, _prog),
-                                      video_only, spec.width, spec.height, spec.fps)
+                                      video_only, spec.width, spec.height, spec.fps,
+                                      profile=profile)
         audio_path, audio_meta = common.build_audio_track(
             os.path.join(work_dir, "_audio.wav"), spec.total_duration, spec.audio, work_dir)
         common.mux(video_only, audio_path, out_path)
@@ -333,11 +349,14 @@ class IllustratedBackend(object):
             common.engine_info("illustrated-pillow-ffmpeg"),
             sources=[s.get("asset") for s in spec.scenes if s.get("asset")],
             limitations=LIMITATIONS, validation=validation,
-            extra={"audio_detail": audio_meta})
+            extra={"audio_detail": audio_meta, "profile": profile,
+                   "design_system": design.DESIGN_VERSION})
         return {"output": out_path, "manifest": manifest, "validation": validation}
 
 
 def render(spec: RenderSpec, out_path: str, work_dir: str, asset_dir: str = "",
            cancel: Optional[Callable[[], bool]] = None,
-           progress: Optional[Callable[[str, int], None]] = None) -> Dict[str, Any]:
-    return IllustratedBackend().render(spec, out_path, work_dir, asset_dir, cancel, progress)
+           progress: Optional[Callable[[str, int], None]] = None,
+           profile: str = "production") -> Dict[str, Any]:
+    return IllustratedBackend().render(spec, out_path, work_dir, asset_dir, cancel,
+                                       progress, profile)

@@ -81,7 +81,11 @@ def cmd_run_job(args) -> int:
 
     overrides = {}
     if args.fast:
-        overrides = {"width": 960, "height": 540, "fps": 24}
+        from .config import PREVIEW_PROFILE
+        overrides = dict(PREVIEW_PROFILE)
+        print("! --fast is a PREVIEW profile (%dx%d@%d) — the result is NOT a "
+              "deliverable. Omit --fast for Full-HD production output."
+              % (overrides["width"], overrides["height"], overrides["fps"]))
     if args.no_render:
         os.environ.setdefault("AGENT_NO_RENDER", "1")
 
@@ -162,6 +166,69 @@ def cmd_selftest(args) -> int:
     return 0
 
 
+def cmd_qa(args) -> int:
+    """Run the visual QA pass on an existing MP4 (technical + heuristics + sheet)."""
+    from .video import qa as qa_mod
+    out_dir = args.out or os.path.join(os.path.dirname(os.path.abspath(args.video)), "qa")
+    report = qa_mod.qa_video(
+        args.video, out_dir,
+        expect_width=args.width or None, expect_height=args.height or None,
+        expect_fps=args.fps or None, require_audio=not args.no_audio,
+        label=args.label or "")
+    tech = report.get("technical", {}) or {}
+    print("QA report: %s" % os.path.join(out_dir, "qa_report.md"))
+    print("  file      : %s" % report.get("video"))
+    print("  duration  : %ss" % tech.get("duration_sec"))
+    print("  video     : %s %sx%s @ %sfps" % (tech.get("video_codec"), tech.get("width"),
+                                              tech.get("height"), tech.get("fps")))
+    print("  audio     : %s (%s ch)" % (tech.get("audio_codec"), tech.get("audio_channels")))
+    print("  size      : %s bytes" % tech.get("size_bytes"))
+    print("  contact   : %s" % report.get("contact_sheet"))
+    for e in report.get("errors", []):
+        print("  FAILURE   : %s" % e)
+    for f in report.get("findings", []):
+        print("  finding   : %s" % f)
+    if not report.get("findings") and not report.get("errors"):
+        print("  note      : no automated flag — human review still required")
+    return 1 if report.get("errors") else 0
+
+
+def cmd_render_qa(args) -> int:
+    """Render the self-contained QA fixture (Full-HD by default) and QA it.
+
+    The fixture is synthetic test content, never a client film; it exists to
+    demonstrate and inspect the renderer and the QA pipeline.
+    """
+    from . import qa_fixture
+    cfg = _cfg()
+    cfg.ensure_dirs()
+    out_dir = args.out or os.path.join(cfg.output_dir, "qa")
+    os.makedirs(out_dir, exist_ok=True)
+
+    def progress(text: str, pct: int) -> None:
+        print("[%3d%%] %s" % (pct, text), flush=True)
+
+    video_path, result, report = qa_fixture.run_qa(
+        out_dir, style=args.style, width=args.width, height=args.height,
+        fps=args.fps, profile=args.profile, progress=progress)
+    tech = report.get("technical", {}) or {}
+    print("\nQA fixture video : %s" % video_path)
+    print("  validated    : %s" % (result.get("validation", {}).get("ok")))
+    print("  duration     : %ss" % tech.get("duration_sec"))
+    print("  video        : %s %sx%s @ %sfps" % (tech.get("video_codec"), tech.get("width"),
+                                                tech.get("height"), tech.get("fps")))
+    print("  audio        : %s (%s ch)" % (tech.get("audio_codec"), tech.get("audio_channels")))
+    print("  size         : %s bytes" % tech.get("size_bytes"))
+    print("  contact sheet: %s" % report.get("contact_sheet"))
+    print("  report       : %s" % os.path.join(out_dir, "qa_%s" % args.style, "qa_report.md"))
+    for f in report.get("findings", []):
+        print("  finding      : %s" % f)
+    for e in report.get("errors", []):
+        print("  FAILURE      : %s" % e)
+    print("\nNOTE: automated checks are heuristics; a human must watch the film.")
+    return 0 if tech.get("width") else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="agent_system",
                                 description="Law-firm research & video production system")
@@ -189,7 +256,8 @@ def build_parser() -> argparse.ArgumentParser:
     rj.add_argument("--no-preview", dest="no_preview", action="store_true",
                     help="skip the short preview clip")
     rj.add_argument("--fast", action="store_true",
-                    help="render at 960x540@24 for quick checks")
+                    help="PREVIEW ONLY: render at the preview profile for quick checks "
+                         "(never a deliverable)")
     rj.add_argument("--preview-only", dest="preview_only", action="store_true",
                     help="research + story + short preview only (no full render)")
     rj.set_defaults(func=cmd_run_job)
@@ -197,6 +265,28 @@ def build_parser() -> argparse.ArgumentParser:
     cs = sub.add_parser("check-spec", help="validate a scene manifest")
     cs.add_argument("path")
     cs.set_defaults(func=cmd_check_spec)
+
+    qa = sub.add_parser("qa", help="visual QA on an existing MP4 "
+                                   "(technical + heuristics + contact sheet)")
+    qa.add_argument("video")
+    qa.add_argument("--out", default="", help="output directory for the QA report")
+    qa.add_argument("--label", default="", help="human label for the artifact")
+    qa.add_argument("--width", type=int, default=0, help="expected width")
+    qa.add_argument("--height", type=int, default=0, help="expected height")
+    qa.add_argument("--fps", type=int, default=0, help="expected fps")
+    qa.add_argument("--no-audio", dest="no_audio", action="store_true",
+                    help="do not require an audio stream")
+    qa.set_defaults(func=cmd_qa)
+
+    rqa = sub.add_parser("render-qa", help="render the synthetic QA fixture and QA it")
+    rqa.add_argument("--style", default="motion",
+                     choices=["motion", "illustrated", "blender3d"])
+    rqa.add_argument("--width", type=int, default=1920)
+    rqa.add_argument("--height", type=int, default=1080)
+    rqa.add_argument("--fps", type=int, default=30)
+    rqa.add_argument("--profile", default="production", choices=["production", "preview"])
+    rqa.add_argument("--out", default="")
+    rqa.set_defaults(func=cmd_render_qa)
     return p
 
 

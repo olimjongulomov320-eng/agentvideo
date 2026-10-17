@@ -13,10 +13,10 @@ machine, so no caller can accidentally present an unavailable style as working.
 import os
 from typing import Any, Dict, List, Optional
 
-from . import blender3d, common, draw, illustrated, motion, spec as _spec
+from . import blender3d, common, design, draw, illustrated, motion, qa, spec as _spec
 
-__all__ = ["common", "draw", "motion", "illustrated", "blender3d", "spec",
-           "get_backend", "backend_info", "list_backends", "render_style",
+__all__ = ["common", "draw", "design", "qa", "motion", "illustrated", "blender3d",
+           "spec", "get_backend", "backend_info", "list_backends", "render_style",
            "SpecError", "validate_render_spec"]
 
 SpecError = _spec.SpecError
@@ -81,12 +81,25 @@ def list_backends() -> List[Dict[str, Any]]:
 
 
 def render_style(spec, out_path: str, work_dir: str, asset_dir: str = "",
-                 cancel=None, progress=None) -> Dict[str, Any]:
+                 cancel=None, progress=None, profile: str = "production") -> Dict[str, Any]:
     """Render *spec* with the backend its ``style`` selects.
 
     Each backend performs its own availability check and raises a precise,
     actionable error (e.g. the Blender install steps), so the reason a style
     could not render is always specific rather than generic.
+
+    ``profile`` selects the encoder quality profile (``production`` | ``preview``);
+    backends that do not support it are called without the argument.
     """
     backend = get_backend(spec.style)
+    import inspect
+    try:
+        params = inspect.signature(backend.render).parameters
+        supports = "profile" in params or any(
+            p.kind == p.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):
+        supports = False
+    if supports:
+        return backend.render(spec, out_path, work_dir, asset_dir, cancel, progress,
+                              profile=profile)
     return backend.render(spec, out_path, work_dir, asset_dir, cancel, progress)

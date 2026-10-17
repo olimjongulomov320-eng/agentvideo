@@ -44,6 +44,8 @@ and serves as the reference example of the agent's output quality.
 | Web page fetching & search | ✅ works |
 | Facebook pages | ⚠️ login-walled — agent records this honestly and uses your exports/screenshots instead |
 | Video rendering (ffmpeg) | ✅ works — real MP4s can be produced |
+| Deliverable resolution | ✅ **Full HD 1920×1080 @ 30 fps** by default (`RENDER_QUALITY=production`); `--fast` is a labelled, non-deliverable preview (see `VIDEO_PIPELINE.md`) |
+| Automated visual QA | ✅ frame metrics, motion/static detection, safe-margin checks, contact sheet (`python3 -m agent_system qa <file>`) |
 | Frame/typography rendering (Python + Pillow) | ✅ works |
 | Uzbek text rendering | ✅ works (OpenType fonts with Latin Extended) |
 | Text-to-speech | ⚠️ macOS `say` has Russian (Milena) but **no Uzbek** — final Uzbek narration needs a human narrator |
@@ -72,6 +74,7 @@ and serves as the reference example of the agent's output quality.
 | `agent-instructions.md` | Human-readable copy of the agent's operating procedure |
 | `AGENT_TESTS.md` | Real tests executed against this installation, with results |
 | `TEST_REPORT.md` | Python `agent_system/` test report (172 tests, automated/mocked/manual) |
+| `VIDEO_PIPELINE.md` | **Full-HD render pipeline**: root-cause analysis, design system, profiles, QA heuristics and calibration, commands, limitations |
 | `TELEGRAM_SETUP.md` | BotFather setup, numeric user IDs, `.env`, access control (exactly two users) |
 | `MAC_LAUNCH.md` | macOS commands: styles/health/run-job/selftest/serve, no-render mode |
 | `VPS_DEPLOYMENT.md` | Linux VPS deployment with systemd, security, backups |

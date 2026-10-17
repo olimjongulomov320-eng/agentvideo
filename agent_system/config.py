@@ -23,6 +23,16 @@ DEFAULTS = {
     "OPENCODE_MODEL": "",
 }
 
+# Render quality profiles. A *deliverable* film is produced with the production
+# profile (Full HD 1920x1080 @30). A fast preview is a separate, lower profile
+# that must never silently become the deliverable.
+#
+# Note: resolution is the target *output* size — frames are rendered at this
+# size from the start, never upscaled from a smaller composition.
+PRODUCTION_PROFILE = {"width": 1920, "height": 1080, "fps": 30}
+PREVIEW_PROFILE = {"width": 960, "height": 540, "fps": 24}
+QUALITY_NAMES = ("production", "preview")
+
 KNOWN_STYLES = ("motion", "illustrated", "blender3d")
 STYLE_LABELS = {
     "motion": "Motion Graphics (2D corporate)",
@@ -163,6 +173,7 @@ class Config:
     opencode_bin: str = "opencode"
     opencode_model: str = ""
     fast_render: bool = False
+    render_quality: str = "production"
     capabilities: Optional[Capabilities] = None
 
     # ------------------------------------------------------------------ derived
@@ -210,6 +221,10 @@ class Config:
         except ValueError:
             ids = []
 
+        quality = str(_env("RENDER_QUALITY", "production")).strip().lower()
+        if quality not in QUALITY_NAMES:
+            quality = "production"
+
         cfg = cls(
             project_root=root,
             output_dir=os.path.abspath(out),
@@ -223,6 +238,7 @@ class Config:
             opencode_bin=str(_env("OPENCODE_BIN", "opencode")),
             opencode_model=str(_env("OPENCODE_MODEL", "")),
             fast_render=_as_bool("FAST_RENDER", False),
+            render_quality=quality,
         )
         if detect:
             cfg.capabilities = detect_capabilities()
@@ -239,16 +255,30 @@ class Config:
             problems.append("TELEGRAM_ALLOWED_USER_IDS has an implausible number of IDs")
         return problems
 
-    def render_overrides(self) -> Dict[str, object]:
-        """Return render dimension overrides for fast rendering.
+    def production_profile(self) -> Dict[str, object]:
+        """Dimensions for a *deliverable* render: Full HD 1920x1080 @30fps."""
+        return dict(PRODUCTION_PROFILE)
 
-        When fast_render is truthy, return low-resolution overrides suitable for
-        a preview-style full render (960x540 @24fps). Otherwise return an empty
-        mapping so caller-supplied dimensions are preserved.
+    def preview_profile(self) -> Dict[str, object]:
+        """Dimensions for a fast, explicitly non-deliverable preview: 960x540 @24."""
+        return dict(PREVIEW_PROFILE)
+
+    def render_overrides(self) -> Dict[str, object]:
+        """Legacy name, kept for backward compatibility — **preview only**.
+
+        When ``fast_render`` is set this returns the *preview* dimensions. Using
+        it for a deliverable is what silently produced a 960x540 "final" in the
+        old pipeline; use :meth:`production_profile` for finals instead.
         """
         if self.fast_render:
-            return {"width": 960, "height": 540, "fps": 24}
+            return self.preview_profile()
         return {}
+
+    def encode_profile(self) -> str:
+        """Encoder quality profile for the renderer: ``production`` or ``preview``."""
+        if self.fast_render or self.render_quality == "preview":
+            return "preview"
+        return "production"
 
     def summary(self) -> Dict[str, object]:
         """Safe, redacted summary for logging and /health."""
@@ -263,6 +293,7 @@ class Config:
             "job_timeout_sec": self.job_timeout_sec,
             "opencode_enabled": self.opencode_enabled,
             "fast_render": bool(self.fast_render),
+            "render_quality": self.render_quality,
             "capabilities": caps,
         }
 

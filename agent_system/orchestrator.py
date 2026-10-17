@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import story as story_mod
 from . import video
+from .config import PREVIEW_PROFILE, PRODUCTION_PROFILE
 from .research import ledger_csv, report_markdown, research_firm
 from .security import redact
 
@@ -96,7 +97,13 @@ def _write(path: str, text: str) -> str:
 
 
 def _preview_spec(spec) -> Any:
-    """Build a short, low-resolution preview spec from the full spec."""
+    """Build a short preview spec: the opening scenes at the preview profile.
+
+    The preview is deliberately *not* the deliverable: its watermark says so and
+    its dimensions come from ``PREVIEW_PROFILE``. Frames are still rendered at
+    this (smaller) size natively — nothing is upscaled or downscaled after the
+    fact.
+    """
     scenes: List[Dict[str, Any]] = []
     acc = 0.0
     for s in spec.scenes:
@@ -106,9 +113,9 @@ def _preview_spec(spec) -> Any:
             break
     raw = spec.to_dict()
     raw["scenes"] = scenes
-    raw["width"] = min(spec.width, 960)
-    raw["height"] = min(spec.height, 540)
-    raw["fps"] = min(spec.fps, 24)
+    raw["width"] = min(spec.width, int(PREVIEW_PROFILE["width"]))
+    raw["height"] = min(spec.height, int(PREVIEW_PROFILE["height"]))
+    raw["fps"] = min(spec.fps, int(PREVIEW_PROFILE["fps"]))
     raw["watermark"] = "DEMO / CONCEPT PREVIEW — SHORT PREVIEW"
     raw["output_name"] = "preview.mp4"
     preview, _errors = video.validate_render_spec(raw)
@@ -220,7 +227,16 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     with open(story_paths["scene_manifest.json"], "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
     if overrides:
+        # An explicit caller override wins (used by tests and by the CLI's
+        # deliberately-non-deliverable fast mode).
         manifest.update(overrides)
+        result["render_profile"] = "override"
+    else:
+        # A deliverable is produced at the Full-HD production profile unless the
+        # manifest itself already declares dimensions (advanced/offline callers).
+        for key, value in PRODUCTION_PROFILE.items():
+            manifest.setdefault(key, value)
+        result["render_profile"] = "production"
     spec, spec_errors = video.validate_render_spec(manifest)
     if spec_errors:
         for e in spec_errors:
@@ -239,7 +255,8 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
             preview_out = os.path.join(job_dir, "preview.mp4")
             pres = video.render_style(pspec, preview_out,
                                       os.path.join(work_dir, "preview"),
-                                      asset_dir=asset_dir, cancel=cancel)
+                                      asset_dir=asset_dir, cancel=cancel,
+                                      profile="preview")
             artifact(preview_out)
             result["preview"] = preview_out
             result["preview_validation"] = pres["validation"]
@@ -318,7 +335,8 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     try:
         full_out = os.path.join(job_dir, "final.mp4")
         rendered = video.render_style(spec, full_out, work_dir, asset_dir=asset_dir,
-                                      cancel=cancel, progress=render_progress)
+                                      cancel=cancel, progress=render_progress,
+                                      profile=cfg.encode_profile())
         artifact(full_out)
         result["output"] = full_out
         result["validation"] = rendered["validation"]
