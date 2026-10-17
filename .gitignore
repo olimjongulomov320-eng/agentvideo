@@ -1,5 +1,10 @@
 .env
 
+# Any other local env file is a secret too. `.env.example` is a tracked
+# template (docs tell people to `cp .env.example .env`), so it is re-included.
+.env.*
+!.env.example
+
 # Local QA workspace: rendered QA fixtures, extracted frames, contact sheets and
 # QA reports. These are build/QA artifacts (several MB of PNGs/MP4s) kept on disk
 # for review but intentionally untracked. Regenerate with:
