@@ -10,9 +10,10 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from .research import CORROBORATED, Claim, ResearchResult, VERIFIED
+from .research import (CORROBORATED, Claim, ResearchResult, SINGLE_SOURCE,
+                       UNVERIFIED, VERIFIED)
 
 PLACEHOLDER = "[{} — not found in accessible sources]"
 
@@ -283,44 +284,238 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
 
 
 # ----------------------------------------------------------------- concepts
-def build_concepts(firm: str, facts: Facts, result: ResearchResult) -> List[Dict[str, Any]]:
-    usable = len(result.claims)
-    return [
+# A concept may only put a *factual* sentence about the firm into its central
+# idea when the evidence ledger can carry it. Creative framing — "a story of
+# people, not slogans" — is a choice about tone, not a claim, and is always
+# allowed. The distinction is kept explicit so a reviewer can see, per concept,
+# which words are evidence and which are craft.
+_TECH_CLAIM_RE = re.compile(
+    r"(?i)(?<![0-9a-z])"
+    r"(?:legal\s+ai|ai[-\s]?(?:powered|driven|enabled)|"
+    r"artificial\s+intelligence|machine\s+learning|deep\s+learning|"
+    r"neural\s+network\w*|"
+    r"искусственн\w*\s+интеллект|нейросет\w*|"
+    r"suniy\s+intellekt)"
+    r"(?![0-9a-z])")
+
+FIT_STRONG = "Strong"
+FIT_MEDIUM = "Medium"
+FIT_LIMITED = "Limited"
+_FIT_RANK = {FIT_STRONG: 3, FIT_MEDIUM: 2, FIT_LIMITED: 1}
+
+
+def _line(text: str, source_id: str, evidence_class: str, suffix: str = "") -> str:
+    return "%s%s [%s · %s]" % (" ".join((text or "").split())[:160],
+                               suffix, source_id or "—",
+                               evidence_class or UNVERIFIED)
+
+
+def _dedupe(items: List[str]) -> List[str]:
+    out: List[str] = []
+    for it in items:
+        if it and it not in out:
+            out.append(it)
+    return out
+
+
+def tech_support(result: Optional[ResearchResult]) -> List[str]:
+    """Ledger claims that actually put legal/AI technology at this firm."""
+    if result is None:
+        return []
+    return [_line(c.text, c.source_id, c.evidence_class)
+            for c in (result.claims or []) if _TECH_CLAIM_RE.search(c.text or "")]
+
+
+def evidence_basis(facts: Optional[Facts], result: Optional[ResearchResult],
+                   interview_claims: Sequence = ()) -> Dict[str, List[str]]:
+    """Bucket what the film may stand on, keeping the categories separate.
+
+    * ``documented_facts``      — verified/corrobated; may be stated as fact
+    * ``attributed_statements`` — single-source; evidence the speaker said it
+    * ``creative_framing``      — a choice of tone; never a claim
+    * ``unresolved_claims``     — named gaps, disclosed rather than filled
+    """
+    facts = facts or Facts(firm_name="")
+    result = result or ResearchResult(firm_name="")
+
+    documented: List[str] = []
+    attributed: List[str] = []
+    for key, f in facts.items.items():
+        if f.source_id == "USER":
+            # Operator-supplied input, not evidence found in any source.
+            continue
+        text = "%s (%s)" % (key, f.value)
+        bucket = documented if f.confidence in (VERIFIED, CORROBORATED) else attributed
+        bucket.append(_line(text, f.source_id, f.confidence))
+    for c in result.claims:
+        bucket = (documented if c.evidence_class in (VERIFIED, CORROBORATED)
+                  else attributed)
+        bucket.append(_line(c.text, c.source_id, c.evidence_class))
+    for c in interview_claims:
+        attributed.append(_line("recollection: %s" % getattr(c, "text", ""),
+                                "interview", SINGLE_SOURCE))
+
+    return {"documented_facts": _dedupe(documented),
+            "attributed_statements": _dedupe(attributed),
+            "creative_framing": [],
+            "unresolved_claims": _dedupe(list(facts.missing()))}
+
+
+def build_concepts(firm: str, facts: Optional[Facts],
+                   result: Optional[ResearchResult],
+                   interview_claims: Sequence = ()) -> List[Dict[str, Any]]:
+    """Three genuinely distinct concepts, each honest about what it may assert.
+
+    The three keep different *approaches* (emotional framing, human texture,
+    evidence timeline); what changes with the evidence is which firm-specific
+    claims each is allowed to make, how candid its evidence-fit label is, and
+    which gaps it discloses. Nothing the ledger cannot carry is invented, and a
+    concept is never labelled "Strong" while it asserts something unsupported.
+
+    Exactly one concept is always recommended: the highest evidence fit, with
+    the list order as a stable tie-break so a thin-evidence job still gets a
+    single, clearly marked suggestion.
+    """
+    facts = facts or Facts(firm_name=firm)
+    result = result or ResearchResult(firm_name=firm)
+    basis = evidence_basis(facts, result, interview_claims)
+    gaps = list(basis["unresolved_claims"])
+    documented = basis["documented_facts"]
+    ai_claims = tech_support(result)
+
+    concepts: List[Dict[str, Any]] = [
         {
             "id": "concept-a",
             "title": "The Distance",
-            "central_idea": "Justice is delayed by distance and time; the firm closes that gap, and now builds legal AI to close it faster.",
-            "evidence_fit": "Strong (uses only what the ledger supports; gaps become placeholders)",
-            "strengths": [
-                "Emotionally legible in every language",
-                "Works without archive photos",
-                "Sets up an AI/technology climax honestly",
-            ],
-            "weaknesses": [
-                "Depends on one milestone being verifiable",
-                "Needs an evocative opening image",
-            ],
-            "recommended": True,
+            "evidence_fit_level": FIT_LIMITED,
+            "evidence_fit": "",
+            "strengths": [],
+            "weaknesses": [],
+            "central_idea": "",
+            "asserted_claims": [],
+            "evidence_sources": [],
         },
         {
             "id": "concept-b",
             "title": "Built by Hand",
-            "central_idea": "A firm built case by case — the story is people, habits and standards, not slogans.",
-            "evidence_fit": "Medium (strongest if interviews are recorded)",
-            "strengths": ["Human and warm", "Ideal if clients/team clips exist"],
-            "weaknesses": ["Weak without interview audio", "Risk of drifting into praise"],
-            "recommended": False,
+            "evidence_fit_level": FIT_MEDIUM,
+            "evidence_fit": "",
+            "strengths": [],
+            "weaknesses": [],
+            "central_idea": "",
+            "asserted_claims": [],
+            "evidence_sources": [],
         },
         {
             "id": "concept-c",
             "title": "The Record",
-            "central_idea": "An evidence-led film: dates, documents and milestones shown as a timeline.",
-            "evidence_fit": "Strong and safest (closest to the ledger)",
-            "strengths": ["Verifiable on screen", "Credible for a legal audience"],
-            "weaknesses": ["Coolest tone", "Fewer emotional peaks"],
-            "recommended": False,
+            "evidence_fit_level": FIT_LIMITED,
+            "evidence_fit": "",
+            "strengths": [],
+            "weaknesses": [],
+            "central_idea": "",
+            "asserted_claims": [],
+            "evidence_sources": [],
         },
     ]
+    by_id = {c["id"]: c for c in concepts}
+
+    # ---- concept-a: emotional framing whose spine is a technology arc. The arc
+    # is a factual claim, so it is included only when the ledger carries it and
+    # is dropped (and disclosed as dropped) when it does not.
+    a = by_id["concept-a"]
+    a["creative_framing"] = [
+        "Justice is delayed by distance and time — a framing choice, not a claim",
+        "The firm is shown as the force closing that distance",
+    ]
+    if ai_claims:
+        a["central_idea"] = ("Justice is delayed by distance and time; the firm "
+                             "closes that gap, and builds legal AI to close it "
+                             "faster.")
+        a["evidence_fit_level"] = FIT_STRONG
+        a["evidence_fit"] = ("%s — the technology arc is carried by a cited source"
+                             % FIT_STRONG)
+        a["strengths"] = ["Emotionally legible in every language",
+                          "Works without archive photos",
+                          "Ends on a technology arc the ledger supports"]
+        a["weaknesses"] = ["Depends on one milestone being verifiable",
+                           "Needs an evocative opening image"]
+        a["asserted_claims"] = ["the firm builds legal AI"]
+        a["evidence_sources"] = [c.split("[")[-1].rstrip("] ") for c in ai_claims]
+    else:
+        a["central_idea"] = ("Justice is delayed by distance and time; the firm "
+                             "closes that gap, one answered question at a time.")
+        a["evidence_fit_level"] = FIT_LIMITED
+        a["evidence_fit"] = ("%s — the ledger holds no technology or innovation "
+                             "claim, so the arc that makes this concept distinct "
+                             "was removed rather than invented" % FIT_LIMITED)
+        a["strengths"] = ["Emotionally legible in every language",
+                          "Works without archive photos"]
+        a["weaknesses"] = ["The distinctive technology arc is not evidenced and "
+                           "was dropped",
+                           "Depends on one milestone being verifiable",
+                           "Needs an evocative opening image"]
+
+    # ---- concept-b: human texture, which is only evidenced by interviews.
+    b = by_id["concept-b"]
+    b["central_idea"] = ("A firm built case by case — the story is people, habits "
+                         "and standards, not slogans.")
+    b["creative_framing"] = ["The story is people, habits and standards, not "
+                             "slogans — a framing choice, not a claim"]
+    n_interviews = len(interview_claims)
+    if n_interviews:
+        b["evidence_fit_level"] = FIT_MEDIUM
+        b["evidence_fit"] = ("%s — %d interview statement(s) give real voices; each "
+                             "is a single-source recollection, not established fact"
+                             % (FIT_MEDIUM, n_interviews))
+        b["strengths"] = ["Human and warm",
+                          "%d statement(s) already on record" % n_interviews]
+        b["weaknesses"] = ["Recollections are single-source until corroborated",
+                           "Risk of drifting into praise"]
+    else:
+        b["evidence_fit_level"] = FIT_LIMITED
+        b["evidence_fit"] = ("%s — no interview material was supplied, so the human "
+                             "texture would rest on staging rather than evidence"
+                             % FIT_LIMITED)
+        b["strengths"] = ["Human and warm", "Ideal if team clips exist"]
+        b["weaknesses"] = ["Weak without interview audio",
+                           "Risk of drifting into praise"]
+
+    # ---- concept-c: evidence-led timeline, which needs dated facts to stand on.
+    c = by_id["concept-c"]
+    c["central_idea"] = ("An evidence-led film: dates, documents and milestones "
+                         "shown as a timeline.")
+    c["creative_framing"] = ["Dates and documents shown as a timeline — a "
+                             "presentational choice, not a claim"]
+    c["weaknesses"] = ["Coolest tone", "Fewer emotional peaks"]
+    c["strengths"] = ["Verifiable on screen", "Credible for a legal audience"]
+    if documented:
+        c["evidence_fit_level"] = FIT_STRONG
+        c["evidence_fit"] = ("%s — every dated line can cite the claim it stands "
+                             "on (%d verified or corroborated)"
+                             % (FIT_STRONG, len(documented)))
+        c["evidence_sources"] = [d.split("[")[-1].rstrip("] ") for d in documented]
+    else:
+        c["evidence_fit_level"] = FIT_LIMITED
+        c["evidence_fit"] = ("%s — the ledger holds no corroborated fact, so a "
+                             "timeline would be built from single-source items and "
+                             "named gaps" % FIT_LIMITED)
+
+    # ---- exactly one recommendation: best fit wins, list order breaks ties.
+    # The tie-break matters: with thin evidence every concept is "Limited", and
+    # marking them all recommended would be no recommendation at all.
+    best = max(_FIT_RANK.get(x["evidence_fit_level"], 1) for x in concepts)
+    winner = next(x for x in concepts
+                  if _FIT_RANK.get(x["evidence_fit_level"], 1) == best)
+    for con in concepts:
+        con["recommended"] = con is winner
+        con["evidence_basis"] = {
+            "documented_facts": list(basis["documented_facts"]),
+            "attributed_statements": list(basis["attributed_statements"]),
+            "creative_framing": list(con["creative_framing"]),
+            "unresolved_claims": list(gaps),
+        }
+    return concepts
 
 
 # ----------------------------------------------------------------- script + storyboard
@@ -365,16 +560,104 @@ def build_scenes(firm: str, facts: Facts, lang: str,
     return scenes
 
 
+class ConceptSelectionError(ValueError):
+    """An explicit concept approval was missing or invalid for this job.
+
+    Raised instead of silently scripting a different concept: the operator
+    approved a specific idea, and a script built on another one would misrepresent
+    that decision.
+    """
+
+
+def concept_key(value: Any) -> str:
+    """A comparable form of a concept id or the operator's shorthand.
+
+    The CLI documents ``--concept`` as "by id (e.g. A, B, C)", and the bot and
+    the tests use the same short form, so ``"A"``, ``"a"``, ``"concept a"`` and
+    ``"concept-a"`` must all resolve to the same concept.
+    """
+    s = str(value or "").strip().lower().replace("_", "-")
+    s = re.sub(r"\s+", "-", s)
+    return re.sub(r"-+", "-", s)
+
+
+def _resolve_concept(concepts: List[Dict[str, Any]], wanted: str) -> Optional[Dict[str, Any]]:
+    key = concept_key(wanted)
+    if not key:
+        return None
+    for c in concepts:
+        if concept_key(c.get("id")) == key:
+            return c
+    # Documented shorthand: a bare letter stands for "concept-<letter>".
+    if re.fullmatch(r"[a-z]", key):
+        short = "concept-" + key
+        for c in concepts:
+            if concept_key(c.get("id")) == short:
+                return c
+    if not key.startswith("concept-") and re.fullmatch(r"[a-z0-9]+", key):
+        short = "concept-" + key
+        for c in concepts:
+            if concept_key(c.get("id")) == short:
+                return c
+    return None
+
+
+def concept_ids_match(left: Any, right: Any) -> bool:
+    """True when two concept references mean the same concept.
+
+    Needed because the operator-facing shorthand ("A") and the canonical id
+    ("concept-a") are the same choice, and an agreement check that compared the
+    raw strings would wrongly report a mismatch and block a valid job.
+    """
+    a, b = concept_key(left), concept_key(right)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a == "concept-" + b or b == "concept-" + a
+
+
+def select_concept(concepts: List[Dict[str, Any]],
+                   concept_id: str = "") -> Tuple[Dict[str, Any], str]:
+    """Return ``(concept, origin)`` where origin is ``"approved"`` or ``"recommended"``.
+
+    An explicit ``concept_id`` must resolve to a concept in ``concepts`` or this
+    raises :class:`ConceptSelectionError` — a script is never built from an idea
+    the operator did not approve. Only callers that pass no id at all (the
+    legacy, non-gated path) fall back to the recommended concept.
+    """
+    if not concepts:
+        raise ConceptSelectionError("no concepts were generated for this job")
+    wanted = str(concept_id or "").strip()
+    if wanted:
+        found = _resolve_concept(concepts, wanted)
+        if found is not None:
+            return found, "approved"
+        available = ", ".join("%s (%s)" % (c.get("id"), c.get("title"))
+                              for c in concepts)
+        raise ConceptSelectionError(
+            "approved concept %r does not exist for this job — available: %s. "
+            "Approve one of those ids (the short form A, B, C is accepted)."
+            % (concept_id, available))
+    fallback = next((c for c in concepts if c.get("recommended")), concepts[0])
+    return fallback, "recommended"
+
+
 def script_markdown(firm: str, concepts: List[Dict[str, Any]], scenes: List[Dict[str, Any]],
-                    lang: str, style: str, total_sec: float) -> str:
-    recommended = next((c for c in concepts if c.get("recommended")), concepts[0])
+                    lang: str, style: str, total_sec: float,
+                    concept_id: str = "") -> str:
+    chosen, origin = select_concept(concepts, concept_id)
+    why = ("approved by the operator" if origin == "approved"
+           else "auto-selected — no explicit concept approval was supplied")
     lines = [
         "# Script — %s" % firm,
         "",
         "**Style:** %s · **Language:** %s · **Target runtime:** %.0f s (%.1f min)"
         % (style, lang.upper(), total_sec, total_sec / 60.0),
         "",
-        "**Central idea:** %s" % recommended["central_idea"],
+        "**Concept:** %s — %s (%s)" % (chosen.get("id"), chosen.get("title"), why),
+        "",
+        "**Central idea:** %s" % chosen["central_idea"],
         "",
         "> Auto-drafted from the evidence ledger. Anything in `[square brackets]` is a "
         "**gap**, not a fact. A human must approve this draft before rendering.",
@@ -400,7 +683,12 @@ def script_markdown(firm: str, concepts: List[Dict[str, Any]], scenes: List[Dict
             ", ".join(s["needs"]) or "—"))
     lines += ["", "## Concepts considered", ""]
     for c in concepts:
-        mark = " **(recommended)**" if c.get("recommended") else ""
+        marks = []
+        if c.get("recommended"):
+            marks.append("recommended")
+        if str(c.get("id")) == str(chosen.get("id")):
+            marks.append("selected for this script")
+        mark = " **(%s)**" % ", ".join(marks) if marks else ""
         lines.append("### %s — %s%s" % (c["id"], c["title"], mark))
         lines.append("")
         lines.append("_%s_" % c["central_idea"])
@@ -463,12 +751,21 @@ def _visual_for(scene: Dict[str, Any], style: str) -> str:
 
 
 def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchResult,
-                       lang: str, style: str, total_sec: float) -> Dict[str, Any]:
-    """Write concepts.md, script.md, storyboard.md, scene_manifest.json. Returns paths."""
+                       lang: str, style: str, total_sec: float,
+                       concept_id: str = "", interview_claims: Sequence = ()) -> Dict[str, Any]:
+    """Write concepts.md, script.md, storyboard.md, scene_manifest.json. Returns paths.
+
+    ``concept_id`` is the concept the operator approved. When it is supplied the
+    script is built from exactly that concept; when the id is invalid this raises
+    :class:`ConceptSelectionError` rather than quietly scripting another one.
+    Callers that pass no id (the legacy, ungated path) keep the old behaviour and
+    use the recommended concept.
+    """
     import os
     os.makedirs(out_dir, exist_ok=True)
-    concepts = build_concepts(firm, facts, result)
+    concepts = build_concepts(firm, facts, result, interview_claims)
     scenes = build_scenes(firm, facts, lang, total_sec)
+    chosen, origin = select_concept(concepts, concept_id)
 
     paths = {}
     p = os.path.join(out_dir, "concepts.md")
@@ -479,11 +776,21 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
                 c["id"], c["title"], " (recommended)" if c.get("recommended") else "",
                 c["central_idea"], c["evidence_fit"], "; ".join(c["strengths"]),
                 "; ".join(c["weaknesses"])))
+            basis = c.get("evidence_basis") or {}
+            for label, key in (("Documented facts", "documented_facts"),
+                               ("Attributed statements", "attributed_statements"),
+                               ("Creative framing", "creative_framing"),
+                               ("Unresolved claims", "unresolved_claims")):
+                vals = basis.get(key) or []
+                fh.write("- %s: %s\n" % (
+                    label, "; ".join(str(v) for v in vals) if vals else "none recorded"))
+            fh.write("\n")
     paths["concepts.md"] = p
 
     p = os.path.join(out_dir, "script.md")
     with open(p, "w", encoding="utf-8") as fh:
-        fh.write(script_markdown(firm, concepts, scenes, lang, style, total_sec))
+        fh.write(script_markdown(firm, concepts, scenes, lang, style, total_sec,
+                                 concept_id))
     paths["script.md"] = p
 
     p = os.path.join(out_dir, "storyboard.md")
@@ -497,6 +804,11 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
         "style": style,
         "total_duration_sec": total_sec,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # The concept this script was actually built from, so the manifest, the
+        # script header and chosen_concept.md all name the same decision.
+        "concept": {"id": chosen.get("id"), "title": chosen.get("title"),
+                    "origin": origin,
+                    "central_idea": chosen.get("central_idea", "")},
         "facts": {k: {"value": v.value, "source": v.source_id,
                       "confidence": v.confidence} for k, v in facts.items.items()},
         "gaps": facts.missing(),

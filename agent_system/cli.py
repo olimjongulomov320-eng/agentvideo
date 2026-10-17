@@ -340,6 +340,26 @@ def cmd_chronology(args) -> int:
     return 0
 
 
+def _read_json(path: str):
+    """Read a JSON object, distinguishing absent from malformed.
+
+    Returns ``("ok", dict)``, ``("missing", None)`` or ``("malformed", None)``.
+    The distinction matters: an absent chronology can honestly be represented by
+    the research-stage snapshot, but a *corrupt* one must not be silently
+    replaced by a stale count.
+    """
+    if not os.path.isfile(path):
+        return "missing", None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return "malformed", None
+    if not isinstance(data, dict):
+        return "malformed", None
+    return "ok", data
+
+
 def _print_job_plan(cfg, store, job_id: str) -> None:
     """Show where a staged job stands: completed steps and the next gate."""
     from . import pipeline
@@ -366,16 +386,52 @@ def _print_job_plan(cfg, store, job_id: str) -> None:
                   % (gate, when, (" (concept %s)" % extra) if extra else ""))
     if state.get("transcripts"):
         print("  transcripts : %d supplied" % len(state["transcripts"]))
-    summary_path = os.path.join(job_dir, "research_summary.json")
-    if os.path.isfile(summary_path):
-        with open(summary_path, "r", encoding="utf-8") as fh:
-            summary = json.load(fh)
+    transcript_status = state.get("transcripts_status") or {}
+    if transcript_status:
+        for path in sorted(transcript_status):
+            record = transcript_status[path] or {}
+            note = record.get("status") or "unknown"
+            if record.get("reused"):
+                note += ", unchanged since the last run"
+            print("    - %s: %s" % (os.path.basename(path), note))
+
+    # The chronology is the canonical persisted record. The research summary is
+    # a snapshot written at the research step and goes stale the moment
+    # transcript analysis adds or contradicts a statement, so it must never be
+    # the last word on contradictions.
+    summary_state, summary = _read_json(
+        os.path.join(job_dir, "research_summary.json"))
+    chrono_state, chrono = _read_json(
+        os.path.join(job_dir, "chronology", "chronology.json"))
+
+    if summary_state == "ok":
         print("  evidence    : %d sources read, %d blocked, %d claims (%d public-safe)"
               % (summary.get("sources_read", 0), summary.get("sources_blocked", 0),
                  summary.get("claims_total", 0), summary.get("claims_public_safe", 0)))
+
+    if chrono_state == "ok":
+        conflicts = sorted(set(chrono.get("conflicts") or []))
         print("  chronology  : %d dated, %d undated, %d conflict(s)"
+              % (len(chrono.get("entries") or []), len(chrono.get("undated") or []),
+                 len(conflicts)))
+        for conflict in conflicts:
+            print("    conflict  : %s" % conflict)
+    elif chrono_state == "malformed":
+        # The chronology exists but cannot be read. Reporting the stale snapshot
+        # here would be a quiet lie about the current count, so say so instead.
+        print("  chronology  : unknown (the stored chronology could not be read; "
+              "no conflict count is shown rather than a stale one)")
+    elif summary_state == "ok":
+        # No chronology on disk yet: the research-stage snapshot is the only
+        # record, and it is labelled as a snapshot so a stale "0" is never
+        # mistaken for the current count.
+        print("  chronology  : %d dated, %d undated, %d conflict(s) "
+              "(research-stage snapshot — no chronology on disk yet)"
               % (summary.get("dated_events", 0), summary.get("undated_claims", 0),
-                 len(summary.get("conflicts") or [])))
+                 len(set(summary.get("conflicts") or []))))
+    else:
+        print("  chronology  : unknown (neither the chronology nor a research "
+              "summary could be read)")
     print("  output dir  : %s" % job_dir)
     if step != "done":
         gate = pipeline.gate_for_step(step)
@@ -432,6 +488,8 @@ def cmd_review(args) -> int:
         kwargs["approve_storyboard"] = True
     if args.transcript:
         kwargs["transcripts"] = list(args.transcript)
+    if getattr(args, "allow_missing_transcripts", False):
+        kwargs["allow_missing_transcripts"] = True
     if args.note:
         kwargs["note"] = args.note
     if args.force:
@@ -639,6 +697,10 @@ def build_parser() -> argparse.ArgumentParser:
                     action="store_true", help="approve rendering the full video")
     rv.add_argument("--transcript", action="append", default=[],
                     help="a transcript file you already hold (never fetched)")
+    rv.add_argument("--allow-missing-transcripts", dest="allow_missing_transcripts",
+                    action="store_true",
+                    help="accept that a supplied transcript could not be read and "
+                         "continue without it (records the gap as a human decision)")
     rv.add_argument("--note", default="", help="why the decision was taken")
     rv.add_argument("--force", action="store_true",
                     help="resume a job the service marked failed after a restart")

@@ -52,6 +52,7 @@ Honesty rules enforced here
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -241,37 +242,99 @@ def evidence_stage(job_dir: str, request: JobRequest, research,
 
 
 # ------------------------------------------------------------ transcript step
+def _file_digest(path: str) -> str:
+    """SHA-256 of a file, so a retry can tell "unchanged" from "edited"."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def transcript_stage(job_dir: str, job_id: str, request: JobRequest,
                      transcript_paths: Sequence[str],
-                     language: str = "") -> Dict[str, Any]:
+                     language: str = "",
+                     known_status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Analyse supplied transcripts; never contact the interviewee.
 
-    Only files the operator already holds are read. An unsupported or missing
-    file is reported as a gap for that interview, never silently ignored.
+    Only files the operator already holds are read. A missing or unreadable
+    transcript is recorded as exactly that and is **never** marked as
+    successfully analysed; the remaining files are still processed, so one bad
+    path does not discard the rest.
+
+    The stage is idempotent, which is what makes a retry safe:
+
+    * a transcript whose bytes are unchanged since its last successful analysis
+      is reused rather than analysed and re-written, so a retry after a
+      *different* file appears cannot duplicate findings already on disk;
+    * a transcript whose bytes have changed is re-analysed, so an old analysis is
+      never presented as if it were current.
+
+    Returns per-path ``status`` so the caller can decide whether the step may be
+    called complete.
     """
     out_dir = os.path.join(job_dir, INTERVIEWS_DIRNAME, ANALYSIS_DIRNAME)
+    known = dict(known_status or {})
     written: Dict[str, Any] = {"artifacts": [], "analyses": [], "failures": [],
-                               "claims": []}
+                               "claims": [], "status": {}}
     for path in transcript_paths:
+        key = os.path.abspath(path)
+        record: Dict[str, Any] = {"status": "", "sha256": "", "reused": False,
+                                  "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
         if not os.path.isfile(path):
             written["failures"].append("%s (file not found)" % path)
+            record["status"] = "missing"
+            written["status"][key] = record
             continue
+        try:
+            digest = _file_digest(path)
+        except OSError as exc:
+            written["failures"].append("%s (unreadable: %s)" % (path, exc))
+            record["status"] = "unreadable"
+            written["status"][key] = record
+            continue
+
+        previous = known.get(key) or {}
+        prior_artifacts = list(previous.get("artifacts") or [])
+        if (previous.get("status") == "analysed"
+                and previous.get("sha256") == digest
+                and prior_artifacts
+                and all(os.path.isfile(p) for p in prior_artifacts)):
+            # Same bytes, previous output still on disk: reuse instead of
+            # re-writing identical files a second time.
+            record["status"] = "analysed"
+            record["sha256"] = digest
+            record["reused"] = True
+            record["artifacts"] = prior_artifacts
+            written["artifacts"] += prior_artifacts
+            written["status"][key] = record
+            continue
+
         try:
             analysis = transcripts_mod.analyse_file(
                 path, language=language or request.language)
         except Exception as exc:                 # one bad file never sinks the job
             written["failures"].append("%s (%s: %s)"
                                        % (path, type(exc).__name__, exc))
+            record["status"] = "failed"
+            written["status"][key] = record
             continue
         paths = transcripts_mod.write_analysis(out_dir, analysis)
-        written["artifacts"] += [p for p in paths.values() if p]
+        produced = [p for p in paths.values() if p]
+        written["artifacts"] += produced
         written["analyses"].append(analysis)
+        record["status"] = "analysed"
+        record["sha256"] = digest
+        record["artifacts"] = produced
+        written["status"][key] = record
         # Quarantine: a statement flagged as client-identifying or privileged is
         # never merged into the citation set used to build the film.
         for claim in analysis.claims:
             if claim.privacy_flags:
                 claim.safe_for_public = False
             written["claims"].append(claim)
+    written["unresolved"] = [k for k, v in written["status"].items()
+                             if v.get("status") != "analysed"]
     return written
 
 
@@ -309,6 +372,17 @@ def concepts_markdown(firm: str, concepts: List[Dict[str, Any]],
         lines.append("- Evidence fit: %s" % c["evidence_fit"])
         lines.append("- Strengths: %s" % "; ".join(c["strengths"]))
         lines.append("- Weaknesses: %s" % "; ".join(c["weaknesses"]))
+        # The four buckets are kept apart on purpose: what the ledger documents,
+        # what is only attributed speech, what is a creative choice, and what is
+        # still unresolved must never be read as one pile of facts.
+        basis = c.get("evidence_basis") or {}
+        for label, key in (("Documented facts", "documented_facts"),
+                           ("Attributed statements", "attributed_statements"),
+                           ("Creative framing", "creative_framing"),
+                           ("Unresolved claims", "unresolved_claims")):
+            vals = basis.get(key) or []
+            lines.append("- %s: %s" % (
+                label, "; ".join(str(v) for v in vals) if vals else "none recorded"))
         lines.append("")
     return "\n".join(lines)
 
@@ -318,7 +392,10 @@ def concepts_stage(job_dir: str, request: JobRequest, research, revision_dir: st
     """Generate the concepts. Deliberately does **not** write the script."""
     facts = story_mod.extract_facts(research, request.firm_name,
                                     request.event_date, request.new_office)
-    concepts = story_mod.build_concepts(request.firm_name, facts, research)
+    # Interview recollections are passed in so a concept can be described as
+    # available *and* labelled single-source — never promoted to documented fact.
+    concepts = story_mod.build_concepts(request.firm_name, facts, research,
+                                        interview_claims)
     heading = ("Round generated from public evidence and %d interview "
                "statement(s). Each concept states its own evidence fit; none "
                "is a claim of quality." % len(interview_claims)
@@ -356,9 +433,14 @@ def script_stage(job_dir: str, request: JobRequest, research, revision_dir: str,
     """
     facts = story_mod.extract_facts(research, request.firm_name,
                                    request.event_date, request.new_office)
+    # If ``concept_id`` names a concept that does not exist for this job,
+    # ``build_story_assets`` raises ConceptSelectionError *before* writing
+    # anything. A script is never produced from a different concept than the one
+    # the operator approved.
     bundle = story_mod.build_story_assets(
         revision_dir, request.firm_name, facts, research,
-        request.language, request.style, float(request.duration_sec))
+        request.language, request.style, float(request.duration_sec),
+        concept_id)
 
     written: Dict[str, Any] = {"artifacts": [], "facts": facts,
                                "bundle": bundle, "concept_id": concept_id}
@@ -373,20 +455,41 @@ def script_stage(job_dir: str, request: JobRequest, research, revision_dir: str,
         written["artifacts"].append(dst)
     written["manifest_path"] = os.path.join(job_dir, "scene_manifest.json")
 
+    # The manifest records the concept the script was actually built from. Read
+    # it back and use *that* for chosen_concept.md, so the decision note, the
+    # script header and the manifest can never name different concepts.
+    selected = {}
+    try:
+        with open(bundle["scene_manifest.json"], "r", encoding="utf-8") as fh:
+            selected = (json.load(fh) or {}).get("concept") or {}
+    except (KeyError, OSError, ValueError):
+        selected = {}
+    selected_id = str(selected.get("id") or concept_id or "")
+    written["selected_concept"] = selected
+    if concept_id and selected_id and \
+            not story_mod.concept_ids_match(selected_id, concept_id):
+        # Defensive: the guard in build_story_assets should make this unreachable.
+        raise story_mod.ConceptSelectionError(
+            "refusing to script: approved concept %r but the script was built "
+            "from %r" % (concept_id, selected_id))
+
     if concept_id:
         chosen_path = os.path.join(job_dir, "chosen_concept.md")
         written["artifacts"].append(_write(
-            chosen_path, _concept_choice_note(request, concept_id)))
+            chosen_path, _concept_choice_note(request, selected_id or concept_id,
+                                              selected.get("title", ""))))
     return written
 
 
-def _concept_choice_note(request: JobRequest, concept_id: str) -> str:
+def _concept_choice_note(request: JobRequest, concept_id: str,
+                         title: str = "") -> str:
+    label = ("%s — %s" % (concept_id, title)) if title else concept_id
     return ("# Chosen concept — %s\n\n"
             "_Recorded: %s_\n\n"
             "The operator approved concept `%s` for this job. The full concept "
             "text and its evidence fit are in `concepts.md`; this file records "
             "only the decision and when it was taken.\n"
-            % (request.firm_name, time.strftime("%Y-%m-%d %H:%M:%S"), concept_id))
+            % (request.firm_name, time.strftime("%Y-%m-%d %H:%M:%S"), label))
 
 
 # ------------------------------------------------------------------ the driver
@@ -440,6 +543,7 @@ def advance_staged(cfg, store, job_id: str,
                    approve_research: bool = False,
                    approve_concept: Optional[str] = None,
                    approve_storyboard: bool = False,
+                   allow_missing_transcripts: bool = False,
                    note: str = "",
                    force: bool = False) -> Dict[str, Any]:
     """Run the staged workflow forward until it completes or hits a gate.
@@ -520,7 +624,39 @@ def advance_staged(cfg, store, job_id: str,
         if p not in known:
             known.append(p)
 
-    state = write_state(job_dir, approvals=approvals, transcripts=known)
+    # An explicit acceptance of a missing transcript is a human decision, so it
+    # is persisted: without it the interviews step stays open and cannot be
+    # passed, which is what stops the film being built as if an interview had
+    # been reviewed when the file was never available.
+    accepted = list(state.get("transcripts_accepted") or [])
+    if allow_missing_transcripts:
+        for p in known:
+            if p not in accepted:
+                accepted.append(p)
+        if known:
+            store.log_event(job_id, "approval",
+                            "missing transcript(s) accepted as a gap: %d"
+                            % len(known))
+    state = write_state(job_dir, approvals=approvals, transcripts=known,
+                        transcripts_accepted=accepted)
+
+    # A transcript supplied in this call that has never been analysed must reopen
+    # the interviews step and everything derived from it. Without this, a file
+    # added *after* the step already ran would be silently skipped, and the film
+    # could be built as though that interview had never been read.
+    if new_transcripts:
+        status_now = dict(state.get("transcripts_status") or {})
+        unread = [p for p in known
+                  if (status_now.get(p) or {}).get("status") != "analysed"]
+        if unread:
+            completed_now = [s for s in (state.get("completed") or [])
+                             if s not in (STEP_TRANSCRIPTS, STEP_CONCEPTS,
+                                          STEP_SCRIPT, STEP_RENDER)]
+            if completed_now != list(state.get("completed") or []):
+                store.log_event(job_id, "progress",
+                                "transcript supplied for re-analysis: reopening the "
+                                "interviews step")
+            state = write_state(job_dir, completed=completed_now)
 
     # -------- what is next, and may it run?
     step = current_step(state)
@@ -602,6 +738,41 @@ def advance_staged(cfg, store, job_id: str,
                 return outcome["result"]
 
             completed = list(state.get("completed") or [])
+            if outcome.get("invalidate_downstream"):
+                # The interviews step found *changed* evidence (a transcript was
+                # re-analysed, not reused). Anything derived from the previous
+                # evidence — the merged chronology in the concepts step, and the
+                # script and render built on top of it — is now stale and must be
+                # rebuilt rather than presented as current.
+                stale = [s for s in completed
+                         if s in (STEP_CONCEPTS, STEP_SCRIPT, STEP_RENDER)]
+                if stale:
+                    completed = [s for s in completed if s not in stale]
+                    store.log_event(job_id, "progress",
+                                    "transcript evidence changed: reopening %s"
+                                    % ", ".join(stale))
+                    result["warnings"].append(
+                        "transcript evidence changed; %s will be rebuilt from the "
+                        "current findings" % ", ".join(stale))
+                # Regardless of which downstream steps were still marked done (a
+                # transcript added later may already have reopened them), the
+                # storyboard a human approved was drawn from the *previous*
+                # evidence and cannot cover what will now be rendered. The
+                # concept *choice* survives — it is a decision about approach,
+                # not about these statements — but the storyboard must be
+                # approved again on the new facts.
+                approvals_now = dict(read_state(job_dir).get("approvals") or {})
+                if "storyboard" in approvals_now:
+                    approvals_now.pop("storyboard")
+                    write_state(job_dir, approvals=approvals_now)
+                    approvals = approvals_now
+                    store.log_event(job_id, "approval",
+                                    "storyboard approval withdrawn: the "
+                                    "evidence behind it changed")
+                    result["warnings"].append(
+                        "the storyboard approval was withdrawn because the "
+                        "evidence behind it changed; it must be approved again "
+                        "before rendering")
             if step not in completed:
                 completed.append(step)
             state = write_state(job_dir, completed=completed,
@@ -684,10 +855,13 @@ def _run_evidence(**kw: Any) -> Dict[str, Any]:
 
 def _run_transcripts(**kw: Any) -> Dict[str, Any]:
     request, job_dir, result, say = kw["request"], kw["job_dir"], kw["result"], kw["say"]
+    store, job_id = kw["store"], kw["job_id"]
     state = read_state(job_dir)
     paths = list(state.get("transcripts") or [])
+    known = dict(state.get("transcripts_status") or {})
     say("interviews", 45, "analysing %d supplied transcript(s)" % len(paths))
-    outcome = transcript_stage(job_dir, kw["job_id"], request, paths)
+    outcome = transcript_stage(job_dir, job_id, request, paths,
+                               known_status=known)
     for path in outcome["artifacts"]:
         result["artifacts"].append(os.path.relpath(path, job_dir))
     for failure in outcome["failures"]:
@@ -695,7 +869,40 @@ def _run_transcripts(**kw: Any) -> Dict[str, Any]:
     if outcome["claims"]:
         say("interviews", 48, "%d statement(s) extracted; none is treated as "
             "established fact" % len(outcome["claims"]))
-    return {"revision": state.get("revision", 0)}
+
+    # Persist what actually happened, per transcript. This record is what
+    # decides whether the step may be called complete.
+    merged = dict(known)
+    merged.update(outcome["status"])
+    write_state(job_dir, transcripts_status=merged)
+
+    accepted = set(state.get("transcripts_accepted") or [])
+    unresolved = [k for k in merged
+                  if merged[k].get("status") != "analysed" and k not in accepted]
+    if unresolved:
+        # A transcript the operator supplied was not analysed. The step must not
+        # be marked done: if it were, adding the file later would be silently
+        # ignored and the film could be built as though the interview had been
+        # reviewed. The job stays resumable so the same job can retry.
+        msg = redact(
+            "%d supplied transcript(s) could not be analysed (%s). Add the "
+            "file(s) and re-run this job to analyse them; the interviews step "
+            "stays open until then, and nothing downstream will run. To proceed "
+            "without them, accept the gap explicitly."
+            % (len(unresolved),
+               ", ".join(os.path.basename(p) for p in unresolved)))[:400]
+        store.set_status(job_id, STATUS_EVIDENCE_GATE, msg, None)
+        store.log_event(job_id, "gate", "transcripts incomplete: %s" % msg)
+        result["status"] = STATUS_EVIDENCE_GATE
+        result["warnings"].append(msg)
+        return {"terminal": True, "result": result, "done": False}
+
+    # A transcript that was freshly analysed (rather than reused unchanged) means
+    # the evidence set moved: the caller must rebuild anything derived from it.
+    changed = any(record.get("status") == "analysed" and not record.get("reused")
+                  for record in outcome["status"].values())
+    return {"revision": state.get("revision", 0),
+            "invalidate_downstream": changed}
 
 
 def _run_concepts(**kw: Any) -> Dict[str, Any]:
@@ -724,11 +931,27 @@ def _run_concepts(**kw: Any) -> Dict[str, Any]:
 
 def _run_script(**kw: Any) -> Dict[str, Any]:
     request, job_dir, result, say = kw["request"], kw["job_dir"], kw["result"], kw["say"]
+    store, job_id = kw["store"], kw["job_id"]
     research = _load_research(job_dir)
     revision_dir, number = next_revision_dir(job_dir)
     concept_id = (read_state(job_dir).get("approvals") or {}).get(
         "concept", {}).get("concept", "")
-    written = script_stage(job_dir, request, research, revision_dir, concept_id)
+    try:
+        written = script_stage(job_dir, request, research, revision_dir, concept_id)
+    except story_mod.ConceptSelectionError as exc:
+        # Never script a concept the operator did not approve. Stop the job at
+        # the concept gate with an explicit request for a valid selection; no
+        # script, storyboard or manifest is written, so nothing downstream can
+        # render from a wrong concept.
+        msg = redact("%s No script was generated. Re-approve one of the "
+                     "concepts listed in concepts.md and re-run this job."
+                     % exc)[:600]
+        store.set_status(job_id, "awaiting_concept_review", msg, None)
+        store.log_event(job_id, "gate", "script blocked: %s" % msg)
+        result["status"] = "awaiting_concept_review"
+        result["gate"] = "concept"
+        result["errors"].append(msg)
+        return {"terminal": True, "result": result, "done": False}
     for path in written["artifacts"]:
         result["artifacts"].append(os.path.relpath(path, job_dir))
     say("script", 58, "script, storyboard and scene manifest written")

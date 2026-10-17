@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Tests: configuration, secret redaction, request validation."""
 import os
+import shutil
+import tempfile
 import unittest
 
 from agent_system import security
@@ -54,7 +56,17 @@ class TestConfig(unittest.TestCase):
     def test_missing_credentials_fail_safely(self):
         os.environ.pop("TELEGRAM_BOT_TOKEN", None)
         os.environ.pop("TELEGRAM_ALLOWED_USER_IDS", None)
-        cfg = Config.from_env(detect=False)
+        # Isolate from the developer's real .env. Config.from_env() loads
+        # "<project_root>/.env" when one exists, which on a developer's machine
+        # would put the credentials silently back and make this assertion depend
+        # on whose machine it runs on. Point the loader at an empty directory
+        # instead: project_root takes precedence over the PROJECT_ROOT variable,
+        # so the real .env is never read, printed, moved or modified here.
+        isolated = tempfile.mkdtemp(prefix="cfg_isolated_")
+        try:
+            cfg = Config.from_env(project_root=isolated, detect=False)
+        finally:
+            shutil.rmtree(isolated, ignore_errors=True)
         problems = cfg.validate_for_service()
         self.assertTrue(any("TELEGRAM_BOT_TOKEN" in p for p in problems))
         self.assertTrue(any("TELEGRAM_ALLOWED_USER_IDS" in p for p in problems))

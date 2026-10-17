@@ -4,8 +4,11 @@
 All network access is mocked with canned pages, so these tests are offline and
 deterministic. The Facebook login-wall case is covered explicitly.
 """
+import sys
 import unittest
+from unittest import mock
 
+from agent_system import research
 from agent_system.research import (CORROBORATED, SINGLE_SOURCE, SOURCE_ERROR,
                                    SOURCE_INACCESSIBLE, UNVERIFIED,
                                    candidate_statements, classify_claim,
@@ -127,6 +130,122 @@ class TestResearchRun(unittest.TestCase):
         src = inspect.getsource(research.default_fetcher)
         self.assertIn("login wall", src)
         self.assertIn("SOURCE_INACCESSIBLE", src)
+
+
+class TestResponseDecoding(unittest.TestCase):
+    """F7 regression: source text must survive the fetch byte-for-byte.
+
+    ``requests`` assumes ISO-8859-1 for a ``text/*`` response that declares no
+    charset (RFC 2616), which turns UTF-8 into mojibake. These tests pin the
+    decoder that replaces that assumption, and they are fully offline: they feed
+    bytes, never a live site.
+    """
+
+    EM = "\u2014"                                   # em dash
+    UZ = "O\u2018zbekiston"                         # Uzbek okina
+    CYR = "\u042e\u0440\u0438\u0434\u0438\u0447\u0435\u0441\u043a\u0430\u044f"   # Cyrillic
+
+    def test_utf8_bytes_without_a_charset_are_decoded_as_utf8(self):
+        text = "Legal %s %s" % (self.EM, self.UZ)
+        self.assertEqual(research.decode_bytes(text.encode("utf-8"), ""), text)
+
+    def test_utf8_bytes_with_a_declared_utf8_charset(self):
+        text = "Legal %s %s" % (self.EM, self.UZ)
+        self.assertEqual(
+            research.decode_bytes(text.encode("utf-8"), "text/html; charset=utf-8"),
+            text)
+
+    def test_declared_non_utf8_encoding_is_respected(self):
+        raw = self.CYR.encode("cp1251")
+        self.assertEqual(
+            research.decode_bytes(raw, "text/html; charset=windows-1251"), self.CYR)
+
+    def test_cyrillic_uzbek_and_em_dash_all_survive(self):
+        text = "%s %s %s" % (self.CYR, self.UZ, self.EM)
+        out = research.decode_bytes(text.encode("utf-8"), "")
+        self.assertEqual(out, text)
+        self.assertIn(self.EM, out)
+        self.assertIn(self.UZ, out)
+
+    def test_a_declared_latin1_page_is_not_corrupted(self):
+        """Requirement 4: legacy pages must decode exactly as they did before."""
+        text = "Caf\u00e9 \u00e0 la carte"
+        raw = text.encode("latin-1")
+        self.assertEqual(research.decode_bytes(raw, ""), text)
+        self.assertEqual(
+            research.decode_bytes(raw, "text/html; charset=iso-8859-1"), text)
+
+    def test_byte_order_mark_is_honoured(self):
+        text = "hello %s world" % self.EM
+        self.assertEqual(research.decode_bytes(text.encode("utf-8-sig"), ""), text)
+
+    def test_unusable_declared_charset_does_not_break_decoding(self):
+        text = "Legal %s ok" % self.EM
+        self.assertEqual(research.charset_from_header("text/html; charset=not-a-codec"), "")
+        self.assertEqual(research.charset_from_header("text/html"), "")
+        self.assertEqual(
+            research.decode_bytes(text.encode("utf-8"),
+                                  "text/html; charset=not-a-codec"), text)
+
+    def test_empty_and_none_bodies(self):
+        self.assertEqual(research.decode_bytes(b"", ""), "")
+        self.assertEqual(research.decode_bytes(None, ""), "")
+
+    def test_ukrainian_and_uzbek_cyrillic_diacritics(self):
+        text = "\u040ezbekiston \u2014 \u0492"           # Uzbek Cyrillic
+        self.assertEqual(research.decode_bytes(text.encode("utf-8"), ""), text)
+
+
+class TestDefaultFetcherKeepsUnicode(unittest.TestCase):
+    """The real ``default_fetcher`` must use the decoder, not ``r.text``.
+
+    ``requests`` is mocked at the module level, so the byte path through the
+    fetcher is exercised with no network access at all.
+    """
+
+    EM = "\u2014"
+    UZ = "O\u2018zbekiston"
+    CYR = "\u042e\u0440\u0438\u0434\u0438\u0447\u0435\u0441\u043a\u0430\u044f"
+
+    def _fake_requests(self, content, headers, status=200):
+        class _Response(object):
+            def __init__(self):
+                self.content = content
+                self.headers = headers
+                self.status_code = status
+                # What requests would have produced, and what the fetcher must
+                # therefore NOT use for a page with no declared charset.
+                self.encoding = "ISO-8859-1"
+                self.text = content.decode("latin-1")
+                self.url = "https://acme.uz"
+
+        class _FakeRequests(object):
+            @staticmethod
+            def get(url, **kwargs):
+                return _Response()
+
+        return _FakeRequests
+
+    def test_no_charset_header_still_yields_utf8(self):
+        body = ("<html><body><p>%s %s %s</p></body></html>"
+                % (self.CYR, self.UZ, self.EM))
+        fake = self._fake_requests(body.encode("utf-8"), {"Content-Type": "text/html"})
+        with mock.patch.dict(sys.modules, {"requests": fake}):
+            result = research.default_fetcher("https://acme.uz")
+        self.assertTrue(result.ok)
+        self.assertIn(self.CYR, result.text)
+        self.assertIn(self.UZ, result.text)
+        self.assertIn(self.EM, result.text)
+        self.assertNotIn("\u00d0\u00ae", result.text, "Cyrillic must not be mojibake")
+        self.assertNotIn("\u00c3\u00a2", result.text, "the em dash must not be mojibake")
+
+    def test_declared_encoding_is_still_honoured(self):
+        body = "<html><body><p>%s</p></body></html>" % self.CYR
+        fake = self._fake_requests(body.encode("cp1251"),
+                                   {"Content-Type": "text/html; charset=windows-1251"})
+        with mock.patch.dict(sys.modules, {"requests": fake}):
+            result = research.default_fetcher("https://acme.uz")
+        self.assertIn(self.CYR, result.text)
 
     def test_report_and_csv_carry_citations(self):
         fetcher = html_pages({"https://acme.uz": FIRM_HTML})

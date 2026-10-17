@@ -702,5 +702,365 @@ class TestChronologyFromTranscripts(StagedBase):
         self.assertEqual(len(timeline.undated), 1)
 
 
+class TestStatusReportsCurrentContradictions(StagedBase):
+    """F1: job-status must report the current chronology, not a stale snapshot.
+
+    The research-step summary is written once, before transcripts are read, so a
+    contradiction introduced by an interview appears in ``chronology.json``
+    while ``research_summary.json`` still says zero. The research snapshot was
+    what the status report printed, which is the bug this class pins.
+    """
+
+    def _status_text(self, jid):
+        import contextlib
+        import io
+        from agent_system import cli
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            cli._print_job_plan(self.cfg, self.store, jid)
+        return buf.getvalue()
+
+    def test_research_summary_says_zero_but_transcript_adds_a_contradiction(self):
+        jid, req = self.make_job()
+        # The website says "founded 2010"; the interview says "established 2011".
+        conflict = self.transcript_file(CONFLICTING, name="founding_partner.srt")
+        self.advance(jid, req, approve_research=True, transcripts=[conflict])
+
+        # The stale research-stage snapshot still reports no contradiction ...
+        with open(os.path.join(self.job_dir(jid), "research_summary.json"),
+                  encoding="utf-8") as fh:
+            summary = json.load(fh)
+        self.assertEqual(summary.get("conflicts"), [])
+
+        # ... but the current chronology has one.
+        with open(os.path.join(self.job_dir(jid), "chronology", "chronology.json"),
+                  encoding="utf-8") as fh:
+            chrono = json.load(fh)
+        self.assertEqual(len(chrono["conflicts"]), 1, chrono["conflicts"])
+
+        text = self._status_text(jid)
+        self.assertIn("1 conflict(s)", text,
+                      "the status must count the current contradictions:\n" + text)
+        self.assertIn(chrono["conflicts"][0][:40], text,
+                      "the status must show the contradiction, not just count it")
+
+    def test_a_missing_chronology_falls_back_to_a_labelled_snapshot(self):
+        jid, _req = self.make_job()
+        os.makedirs(self.job_dir(jid), exist_ok=True)
+        # A summary exists but no chronology has been written yet.
+        with open(os.path.join(self.job_dir(jid), "research_summary.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"conflicts": [], "dated_events": 0, "undated_claims": 0}, fh)
+        text = self._status_text(jid)
+        # The snapshot may be shown, but only clearly labelled as a snapshot —
+        # never as the current count.
+        self.assertIn("snapshot", text)
+        self.assertIn("no chronology on disk yet", text)
+
+    def test_no_readable_record_at_all_is_reported_as_unknown(self):
+        jid, _req = self.make_job()
+        os.makedirs(self.job_dir(jid), exist_ok=True)
+        text = self._status_text(jid)
+        self.assertIn("unknown", text)
+        self.assertNotIn("0 conflict(s)", text)
+
+    def test_a_corrupt_chronology_is_reported_as_unknown_not_as_zero(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        with open(os.path.join(self.job_dir(jid), "chronology", "chronology.json"),
+                  "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        text = self._status_text(jid)
+        self.assertIn("unknown", text)
+        self.assertNotIn("0 conflict(s)", text,
+                         "a corrupt chronology must not be quietly replaced by a "
+                         "stale zero")
+
+
+class TestTranscriptRetry(StagedBase):
+    """F5: a transcript that could not be read must not be treated as analysed.
+
+    These tests pin the whole recovery path: the interviews step stays open, the
+    same job can retry once the file appears, the retry is idempotent, and a
+    *changed* file is re-analysed rather than reused as if it were current.
+    """
+
+    def analysis_dir(self, jid):
+        return os.path.join(self.job_dir(jid), "interviews", "analysis")
+
+    def analysis_names(self, jid):
+        d = self.analysis_dir(jid)
+        return sorted(n for n in os.listdir(d)) if os.path.isdir(d) else []
+
+    def test_missing_transcript_keeps_the_step_open(self):
+        jid, req = self.make_job()
+        missing = os.path.join(self.tmp, "not_yet.srt")
+        result = self.advance(jid, req, approve_research=True, transcripts=[missing])
+        self.assertEqual(result["status"], pipeline.STATUS_EVIDENCE_GATE)
+        state = pipeline.read_state(self.job_dir(jid))
+        self.assertNotIn("transcripts", state["completed"],
+                         "an unread transcript must not complete the step")
+        self.assertEqual(state["transcripts_status"][os.path.abspath(missing)]["status"],
+                         "missing")
+        self.assertEqual(self.analysis_names(jid), [],
+                         "nothing may be recorded as analysed")
+        self.assertTrue(any("not analysed" in w for w in result["warnings"]))
+
+    def test_retry_after_the_transcript_appears_analyses_it(self):
+        jid, req = self.make_job()
+        missing = os.path.join(self.tmp, "not_yet.srt")
+        self.advance(jid, req, approve_research=True, transcripts=[missing])
+        # The operator finds the file and re-runs the same job — no new job.
+        self.transcript_file(TRANSCRIPT, name="not_yet.srt")
+        result = self.advance(jid)
+        self.assertEqual(result["status"], pipeline.STATUS_CONCEPT_GATE,
+                         result.get("errors") or result.get("warnings"))
+        state = pipeline.read_state(self.job_dir(jid))
+        self.assertIn("transcripts", state["completed"])
+        self.assertTrue(self.analysis_names(jid), "the retry must analyse the file")
+        self.assertEqual(
+            state["transcripts_status"][os.path.abspath(missing)]["status"], "analysed")
+
+    def test_repeating_the_retry_does_not_duplicate_findings_or_chronology(self):
+        jid, req = self.make_job()
+        path = self.transcript_file()
+        self.advance(jid, req, approve_research=True, transcripts=[path])
+        before_files = self.analysis_names(jid)
+        with open(os.path.join(self.job_dir(jid), "chronology", "chronology.json"),
+                  encoding="utf-8") as fh:
+            before_chrono = json.load(fh)
+
+        # Force the interviews step to run again, as a retry would.
+        state = pipeline.read_state(self.job_dir(jid))
+        pipeline.write_state(
+            self.job_dir(jid),
+            completed=[s for s in state["completed"] if s != "transcripts"])
+        self.advance(jid)
+
+        self.assertEqual(self.analysis_names(jid), before_files,
+                         "an unchanged transcript must not add a second analysis")
+        with open(os.path.join(self.job_dir(jid), "chronology", "chronology.json"),
+                  encoding="utf-8") as fh:
+            after_chrono = json.load(fh)
+        self.assertEqual([e["year"] for e in after_chrono["entries"]],
+                         [e["year"] for e in before_chrono["entries"]],
+                         "the chronology must not accumulate duplicate entries")
+        self.assertEqual(len(after_chrono["undated"]), len(before_chrono["undated"]))
+        state = pipeline.read_state(self.job_dir(jid))
+        self.assertTrue(state["transcripts_status"][os.path.abspath(path)]["reused"],
+                        "an unchanged transcript should be reused, not rewritten")
+
+    def test_an_edited_transcript_is_reanalysed_not_reused(self):
+        jid, req = self.make_job()
+        path = self.transcript_file()
+        self.advance(jid, req, approve_research=True, transcripts=[path])
+        # The operator fixes the transcript (2010 -> 2011).
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(CONFLICTING)
+        state = pipeline.read_state(self.job_dir(jid))
+        pipeline.write_state(
+            self.job_dir(jid),
+            completed=[s for s in state["completed"] if s != "transcripts"])
+        self.advance(jid)
+        state = pipeline.read_state(self.job_dir(jid))
+        record = state["transcripts_status"][os.path.abspath(path)]
+        self.assertFalse(record["reused"],
+                         "changed bytes must be re-analysed, never reused as current")
+        with open(os.path.join(self.job_dir(jid), "chronology", "chronology.json"),
+                  encoding="utf-8") as fh:
+            chrono = json.load(fh)
+        self.assertTrue(chrono["conflicts"],
+                        "the corrected transcript must reach the chronology")
+
+    def test_accepting_the_gap_lets_the_job_continue(self):
+        jid, req = self.make_job()
+        missing = os.path.join(self.tmp, "never.srt")
+        self.advance(jid, req, approve_research=True, transcripts=[missing])
+        result = self.advance(jid, allow_missing_transcripts=True)
+        self.assertEqual(result["status"], pipeline.STATUS_CONCEPT_GATE,
+                         result.get("errors") or result.get("warnings"))
+        state = pipeline.read_state(self.job_dir(jid))
+        self.assertIn("transcripts", state["completed"])
+        self.assertIn(os.path.abspath(missing), state["transcripts_accepted"])
+        # The gap is recorded, so it stays visible to a reviewer.
+        self.assertEqual(state["transcripts_status"][os.path.abspath(missing)]["status"],
+                         "missing")
+
+    def test_the_step_still_completes_for_a_readable_transcript(self):
+        jid, req = self.make_job()
+        path = self.transcript_file()
+        result = self.advance(jid, req, approve_research=True, transcripts=[path])
+        self.assertEqual(result["status"], pipeline.STATUS_CONCEPT_GATE)
+        state = pipeline.read_state(self.job_dir(jid))
+        self.assertIn("transcripts", state["completed"])
+        self.assertEqual(
+            state["transcripts_status"][os.path.abspath(path)]["status"], "analysed")
+
+    def test_a_second_transcript_added_later_is_analysed_not_silently_skipped(self):
+        jid, req = self.make_job()
+        first = self.transcript_file(TRANSCRIPT, name="first.srt")
+        self.advance(jid, req, approve_research=True, transcripts=[first])
+        self.assertIn("transcripts",
+                      pipeline.read_state(self.job_dir(jid))["completed"])
+
+        # A second interview arrives after the step already ran. Supplying it must
+        # reopen the step rather than be skipped because "transcripts" is done.
+        second = self.transcript_file(CONFLICTING, name="second.srt")
+        self.advance(jid, transcripts=[second])
+
+        state = pipeline.read_state(self.job_dir(jid))
+        self.assertEqual(
+            state["transcripts_status"][os.path.abspath(second)]["status"], "analysed")
+        jsons = [n for n in self.analysis_names(jid) if n.endswith(".json")]
+        self.assertEqual(len(jsons), 2, jsons)
+        # Both statements reach the chronology, so the contradiction surfaces.
+        with open(os.path.join(self.job_dir(jid), "chronology", "chronology.json"),
+                  encoding="utf-8") as fh:
+            chrono = json.load(fh)
+        self.assertTrue(chrono["conflicts"], chrono["conflicts"])
+
+
+class TestApprovedConceptControlsThePipeline(StagedBase):
+    """F4: the approved concept governs the script — end to end, through the CLI.
+
+    The bug this pins: approving concept-c recorded the decision in
+    ``chosen_concept.md`` but the script was still drafted from the
+    *recommended* concept, so the approval was recorded and ignored.
+    """
+
+    def read(self, jid, name):
+        with open(os.path.join(self.job_dir(jid), name), encoding="utf-8") as fh:
+            return fh.read()
+
+    def recommended_id(self, jid):
+        for line in self.read(jid, "concepts.md").splitlines():
+            if line.startswith("## ") and "(recommended)" in line:
+                return line[3:].split(" —")[0].strip()
+        return ""
+
+    def test_approving_concept_c_scripts_concept_c_not_the_recommended_one(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        # Precondition: the *recommended* concept is concept-a, not concept-c.
+        self.assertEqual(self.recommended_id(jid), "concept-a")
+
+        self.advance(jid, approve_concept="C")
+
+        script = self.read(jid, "script.md")
+        manifest = json.loads(self.read(jid, "scene_manifest.json"))
+        chosen_note = self.read(jid, "chosen_concept.md")
+        state = pipeline.read_state(self.job_dir(jid))
+
+        # The four records must agree on one concept.
+        self.assertEqual(manifest["concept"]["id"], "concept-c")
+        self.assertIn("concept-c", chosen_note)
+        self.assertEqual(state["approvals"]["concept"]["concept"], "C")
+        self.assertIn("**Concept:** concept-c", script)
+
+        # The script's own thesis is the approved concept's, so it cannot be
+        # drafting the recommended one while claiming otherwise.
+        thesis = next(line.split("**Central idea:**", 1)[1].strip()
+                      for line in script.splitlines()
+                      if line.startswith("**Central idea:**"))
+        self.assertEqual(thesis, manifest["concept"]["central_idea"])
+
+        # Both markers are shown, and they mark different concepts.
+        self.assertIn("recommended", script)
+        self.assertIn("selected for this script", script)
+
+    def test_an_invalid_concept_id_stops_the_job_without_writing_a_script(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        result = self.advance(jid, approve_concept="concept-z")
+
+        self.assertEqual(result["status"], pipeline.STATUS_CONCEPT_GATE,
+                         result.get("errors"))
+        self.assertNotIn("script",
+                         pipeline.read_state(self.job_dir(jid))["completed"])
+        self.assertFalse(self.exists(jid, "script.md"))
+        self.assertFalse(self.exists(jid, "scene_manifest.json"))
+        # The refusal names the bad id and asks for a valid selection.
+        blob = " ".join(result.get("errors", []) + result.get("warnings", []))
+        self.assertIn("concept-z", blob)
+        self.assertIn("Re-approve", blob)
+
+    def test_the_job_recovers_once_a_valid_concept_is_approved(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="concept-z")
+        self.advance(jid, approve_concept="B")
+        manifest = json.loads(self.read(jid, "scene_manifest.json"))
+        self.assertEqual(manifest["concept"]["id"], "concept-b")
+
+    def test_a_concept_is_never_scripted_before_the_gate_is_passed(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid)                       # no concept approval at all
+        self.assertFalse(self.exists(jid, "script.md"))
+        result = self.advance(jid)
+        self.assertEqual(result["status"], pipeline.STATUS_CONCEPT_GATE)
+
+
+class TestChangedEvidenceRequiresReapproval(StagedBase):
+    """An approval cannot outlive the evidence it was given for.
+
+    When a corrected transcript arrives after a storyboard was approved, the
+    storyboard that was signed off no longer describes what will be rendered, so
+    the approval is withdrawn and the job stops at that gate again.
+    """
+
+    def test_changed_evidence_withdraws_the_storyboard_approval(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")
+
+        # The operator approves the storyboard while a corrected transcript
+        # arrives. The approval is written first, then the new evidence is
+        # analysed — so the approval is now given for statements that are about
+        # to be contradicted.
+        corrected = self.transcript_file(CONFLICTING, name="corrected.srt")
+        result = self.advance(jid, approve_storyboard=True,
+                              transcripts=[corrected], enable_render=False)
+
+        approvals = pipeline.read_state(self.job_dir(jid))["approvals"]
+        self.assertNotIn("storyboard", approvals,
+                         "an approval given for superseded evidence must be withdrawn")
+        self.assertTrue(any("withdrawn" in w for w in result.get("warnings", [])),
+                        result.get("warnings"))
+        # The job stops at that gate instead of rendering on stale sign-off.
+        self.assertEqual(result["status"], pipeline.STATUS_STORY_GATE)
+        self.assertFalse(self.exists(jid, "final.mp4"))
+
+    def test_a_new_storyboard_approval_still_works_after_the_withdrawal(self):
+        """The gate is not jammed: the operator can simply approve again."""
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")
+        corrected = self.transcript_file(CONFLICTING, name="corrected_b.srt")
+        self.advance(jid, approve_storyboard=True,
+                     transcripts=[corrected], enable_render=False)
+        result = self.advance(jid, approve_storyboard=True, enable_render=False)
+        self.assertEqual(result["status"], "completed", result.get("errors"))
+        self.assertIn("storyboard",
+                      pipeline.read_state(self.job_dir(jid))["approvals"])
+
+    def test_the_concept_choice_survives_changed_evidence(self):
+        """A decision about *approach* is not invalidated by new statements."""
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="C")
+        self.assertIn("concept", pipeline.read_state(self.job_dir(jid))["approvals"])
+
+        corrected = self.transcript_file(CONFLICTING, name="corrected2.srt")
+        result = self.advance(jid, approve_storyboard=True,
+                              transcripts=[corrected], enable_render=False)
+
+        approvals = pipeline.read_state(self.job_dir(jid))["approvals"]
+        self.assertIn("concept", approvals,
+                      "the concept selection is a choice of approach and survives")
+        self.assertNotIn("storyboard", approvals)
+        self.assertEqual(result["status"], pipeline.STATUS_STORY_GATE)
+
+
 if __name__ == "__main__":
     unittest.main()

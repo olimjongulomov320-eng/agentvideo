@@ -9,6 +9,7 @@ Guarantees
 * Every claim carries a source id, a URL and an evidence class.
 * Firm self-description is treated as a *claim*, never as fact.
 """
+import codecs
 import csv
 import io
 import json
@@ -192,6 +193,78 @@ class FetchResult(object):
         self.final_url = final_url
 
 
+# ---------------------------------------------------------------- decoding
+# When a ``text/*`` response omits the charset, ``requests`` assumes ISO-8859-1
+# (RFC 2616). A UTF-8 page served without one is then decoded one byte per
+# character, turning every em dash, Cyrillic letter and Uzbek diacritic into
+# mojibake long before the evidence ledger ever sees the text.
+_CHARSET_RE = re.compile(r"(?i)charset\s*=\s*[\"']?([a-z0-9_:.\-]+)")
+_DECODE_FALLBACK = "ISO-8859-1"      # maps every byte to a code point; never fails
+
+
+def charset_from_header(value: str) -> str:
+    """The charset a server declared, but only if it is a codec we really have.
+
+    A malformed header (``charse=utf8``) or a codec this build lacks must never
+    break a fetch, so an unusable declaration is reported as "not declared".
+    """
+    m = _CHARSET_RE.search(value or "")
+    if not m:
+        return ""
+    name = m.group(1).strip()
+    try:
+        codecs.lookup(name)
+    except LookupError:
+        return ""
+    return name
+
+
+def decode_bytes(raw: Any, declared_charset: str = "") -> str:
+    """Decode a fetched body without corrupting its Unicode.
+
+    Preference order:
+
+    1. a byte-order mark — unambiguous, so it wins;
+    2. the charset the server declared, when that codec is usable;
+    3. strict UTF-8, which is what modern sites actually serve;
+    4. ISO-8859-1, which cannot raise, so a legacy page that was never
+       converted still decodes exactly as it did before this fix.
+
+    Step 4 is why this does not corrupt correctly decoded legacy pages: a
+    genuine Latin-1 page fails step 3 and lands on the same codec ``requests``
+    would have chosen for it.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    raw = bytes(raw)
+    if not raw:
+        return ""
+
+    candidates: List[str] = []
+    for magic, enc in ((codecs.BOM_UTF8, "utf-8-sig"),
+                       (codecs.BOM_UTF32_LE, "utf-32-le"),
+                       (codecs.BOM_UTF32_BE, "utf-32-be"),
+                       (codecs.BOM_UTF16_LE, "utf-16-le"),
+                       (codecs.BOM_UTF16_BE, "utf-16-be")):
+        if raw.startswith(magic):
+            candidates.append(enc)
+            break
+    declared = charset_from_header(declared_charset)
+    if declared:
+        candidates.append(declared)
+    candidates.append("utf-8")
+    candidates.append(_DECODE_FALLBACK)
+
+    for enc in candidates:
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("latin-1", "replace")
+
+
 def default_fetcher(url: str, timeout: int = 25, max_bytes: int = 3_000_000) -> FetchResult:
     """Fetch a URL. Never raises; returns a classified FetchResult."""
     try:
@@ -206,7 +279,9 @@ def default_fetcher(url: str, timeout: int = 25, max_bytes: int = 3_000_000) -> 
     except Exception as exc:
         return FetchResult(False, None, state=SOURCE_ERROR, note="request failed: %s" % exc)
 
-    body = r.text or ""
+    # Decoded from the raw bytes rather than from r.text: for a text/* response
+    # that declares no charset, requests assumes ISO-8859-1 and corrupts UTF-8.
+    body = decode_bytes(r.content, r.headers.get("Content-Type", ""))
     if len(body) > max_bytes:
         body = body[:max_bytes]
 
