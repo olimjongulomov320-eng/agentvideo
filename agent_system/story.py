@@ -188,6 +188,11 @@ NARR = {
         "ph_areas": "[practice areas — not found in accessible sources]",
         "ph_ach": "[verified milestone — not found in accessible sources]",
         "ph_office": "[new office address — supply to complete this scene]",
+        # On-screen headings. Kept in the target language so a localised film
+        # never shows a stray English word (a source-language leak).
+        "h_practice": "Practice",
+        "h_record": "Record",
+        "h_people": "People",
     },
     "ru": {
         "hook": "Каждый день люди ждут ответа от закона. Порой этот ответ приходит слишком поздно.",
@@ -202,6 +207,9 @@ NARR = {
         "ph_areas": "[направления практики — не найдены в доступных источниках]",
         "ph_ach": "[подтверждённая веха — не найдена в доступных источниках]",
         "ph_office": "[адрес нового офиса — требуется уточнение]",
+        "h_practice": "Практика",
+        "h_record": "Результаты",
+        "h_people": "Люди",
     },
     "uz": {
         "hook": "Har kuni odamlar qonundan javob kutadi. Ba'zida bu javob juda kech keladi.",
@@ -216,6 +224,9 @@ NARR = {
         "ph_areas": "[faoliyat yo'nalishlari — ochiq manbalarda topilmadi]",
         "ph_ach": "[tasdiqlangan natija — ochiq manbalarda topilmadi]",
         "ph_office": "[yangi ofis manzili — aniqlanishi kerak]",
+        "h_practice": "Faoliyat",
+        "h_record": "Natijalar",
+        "h_people": "Odamlar",
     },
 }
 LANGS = tuple(NARR.keys())
@@ -255,7 +266,7 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
             narration = t["practice"].format(areas=t["ph_areas"])
             sub = t["ph_areas"]
             needs.append("practice_areas")
-        heading = "Practice"
+        heading = t["h_practice"]
     elif key == "achievements":
         a = facts.get("achievement")
         if a:
@@ -265,10 +276,10 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
             narration = t["achievements"].format(a=t["ph_ach"])
             sub = t["ph_ach"]
             needs.append("achievement")
-        heading = "Record"
+        heading = t["h_record"]
     elif key == "people":
         narration = t["people"]
-        heading = "People"
+        heading = t["h_people"]
     elif key == "office":
         narration = t["office"]
         office = facts.get("new_office")
@@ -774,6 +785,64 @@ def storyboard_markdown(firm: str, scenes: List[Dict[str, Any]], style: str) -> 
     return "\n".join(lines) + "\n"
 
 
+def _srt_time(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    ms = int(round((seconds - int(seconds)) * 1000))
+    if ms == 1000:
+        ms = 0
+        seconds += 1
+    s = int(seconds)
+    return "%02d:%02d:%02d,%03d" % (s // 3600, (s % 3600) // 60, s % 60, ms)
+
+
+def _wrap_caption(text: str, width: int = 42) -> str:
+    """Wrap narration into at most two short lines, subtitle-style."""
+    words = " ".join((text or "").split()).split(" ")
+    lines: List[str] = []
+    cur = ""
+    for w in words:
+        if not cur:
+            cur = w
+        elif len(cur) + 1 + len(w) <= width:
+            cur += " " + w
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    if len(lines) > 2:
+        # Keep it to two lines: rejoin the tail and let it overflow the width
+        # rather than dropping words — a subtitle must never lose narration.
+        lines = [lines[0], " ".join(lines[1:])]
+    return "\n".join(lines)
+
+
+def srt_from_scenes(scenes: List[Dict[str, Any]]) -> str:
+    """A synchronised SubRip file built from the scene timings.
+
+    Each scene's narration becomes one or more cues spanning exactly that
+    scene's on-screen time (``start`` .. ``start + dur``), so the captions stay
+    aligned with the picture without any external timing data. Scenes with no
+    narration (or only a placeholder marker) are skipped: a gap banner is not
+    narration and must not be captioned as if it were spoken.
+    """
+    cues: List[str] = []
+    idx = 0
+    for s in scenes:
+        narration = " ".join((s.get("narration") or "").split())
+        if not narration:
+            continue
+        start = float(s.get("start") or 0.0)
+        dur = float(s.get("dur") or 0.0)
+        if dur <= 0:
+            continue
+        idx += 1
+        cues.append("%d\n%s --> %s\n%s\n" % (
+            idx, _srt_time(start), _srt_time(start + dur),
+            _wrap_caption(narration)))
+    return "\n".join(cues)
+
+
 def _visual_for(scene: Dict[str, Any], style: str) -> str:
     base = {
         "statement": "Full-frame typographic statement over a graded background.",
@@ -837,6 +906,13 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
     with open(p, "w", encoding="utf-8") as fh:
         fh.write(storyboard_markdown(firm, scenes, style))
     paths["storyboard.md"] = p
+
+    # A synchronised subtitle track in the film's own language. Written here so
+    # the captions travel with the script/storyboard the operator approves.
+    p = os.path.join(out_dir, "subtitles.srt")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(srt_from_scenes(scenes))
+    paths["subtitles.srt"] = p
 
     manifest = {
         "firm": firm,

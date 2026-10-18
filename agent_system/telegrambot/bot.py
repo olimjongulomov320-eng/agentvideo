@@ -15,6 +15,7 @@ Safety model
 """
 import asyncio
 import html
+import json
 import logging
 import os
 import re
@@ -52,6 +53,7 @@ Website: gsplaw.co.uz. Language: Uzbek. Style: motion graphics.</code>
 
 <b>Commands</b>
 /new — start a job (collects anything missing)
+/approve — continue a job that is waiting for your review
 /status — active + recent jobs
 /jobs — your recent jobs
 /cancel — cancel your active job
@@ -247,6 +249,75 @@ class BotService(object):
             return
         await self._handle_request_text(update, text)
 
+    async def cmd_approve(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Resume a staged job that is paused at a human gate.
+
+        ``/approve`` (no args) resumes the caller's latest paused job;
+        ``/approve <job_id>`` targets a specific one. At the concept gate a
+        choice is required: ``/approve <job_id> A`` (or B / C).
+        """
+        if not self._authorized(update):
+            return await self._reject(update)
+        uid = update.effective_user.id
+        args = list(context.args or [])
+        concept = ""
+        if args:
+            job = self.store.get(args[0])
+            if len(args) > 1:
+                concept = (args[1] or "").strip().upper()[:1]
+        else:
+            job = self.store.find_active_for_user(uid)
+        if not job or int(job.get("user_id") or 0) != uid:
+            await update.effective_message.reply_text(
+                "There is no job of yours waiting for approval.")
+            return
+        status = job.get("status")
+        if status not in self.PAUSED_STATUS_TEXT:
+            await update.effective_message.reply_text(
+                "Job <code>%s</code> is not waiting for approval "
+                "(status: <b>%s</b>)." % (html.escape(str(job["id"])),
+                                          html.escape(str(status))),
+                parse_mode="HTML")
+            return
+
+        job_id = job["id"]
+        if status == "awaiting_concept_review":
+            if concept not in ("A", "B", "C"):
+                await update.effective_message.reply_text(
+                    "Choose the concept to script: <code>/approve %s A</code> "
+                    "(or <code>B</code> / <code>C</code>). The options are in "
+                    "<code>concepts.md</code>." % html.escape(job_id),
+                    parse_mode="HTML")
+                return
+            approve_research = False
+            approve_concept = concept
+            note = "concept %s" % concept
+        elif status == "awaiting_research_review":
+            approve_research = True
+            approve_concept = None
+            note = "research findings"
+        else:                       # awaiting_approval (storyboard)
+            approve_research = False
+            approve_concept = None
+            note = "storyboard"
+
+        try:
+            req = JobRequest.from_dict(json.loads(job.get("params_json") or "{}"))
+        except (ValueError, TypeError):
+            req = JobRequest()
+        if not req.staged:
+            req.staged = True
+        req.concept = approve_concept or req.concept
+
+        self._cancels.setdefault(job_id, threading.Event())
+        self._tasks[job_id] = asyncio.create_task(
+            asyncio.to_thread(self._run_job_sync, job_id, req,
+                              update.effective_chat.id,
+                              approve_research, approve_concept))
+        await update.effective_message.reply_text(
+            "▶️ Continuing job <code>%s</code> after approving the %s."
+            % (html.escape(job_id), html.escape(note)), parse_mode="HTML")
+
     # ---------------------------------------------------------------- messages
     async def on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._authorized(update):
@@ -282,6 +353,10 @@ class BotService(object):
             return
 
         req = sanitize_request(parsed)
+        # Route new bot jobs through the staged gated workflow so that research,
+        # concept approval, and storyboard gates are all honoured before any
+        # script or video is produced.
+        req.staged = True
         style_info = video.backend_info(req.style)
         if not style_info["ready"]:
             await update.effective_message.reply_text(
@@ -297,8 +372,9 @@ class BotService(object):
         await update.effective_message.reply_text(
             "🎬 Job <code>{jid}</code> created.\n"
             "• Firm: <b>{firm}</b>\n• Style: {style}\n• Language: {lang}\n"
-            "• Target: {dur}s\n\nResearch starts now. I will send the concept, script "
-            "and storyboard for your approval before the final render.".format(
+            "• Target: {dur}s\n\nResearch starts now. You will review the research "
+            "report first, then choose a concept, then approve the storyboard — "
+            "each with <code>/approve</code> — before anything is rendered.".format(
                 jid=job_id, firm=html.escape(req.firm_name), style=req.style,
                 lang=req.language.upper(), dur=req.duration_sec),
             parse_mode="HTML")
@@ -371,7 +447,9 @@ class BotService(object):
             await query.answer("Unrecognised action")
 
     # ---------------------------------------------------------------- worker
-    def _run_job_sync(self, job_id: str, req: JobRequest, chat_id: int) -> None:
+    def _run_job_sync(self, job_id: str, req: JobRequest, chat_id: int,
+                      approve_research: bool = False,
+                      approve_concept: Optional[str] = None) -> None:
         cancel_ev = self._cancels.setdefault(job_id, threading.Event())
 
         def progress(stage: str, pct: int, msg: str) -> None:
@@ -391,7 +469,9 @@ class BotService(object):
                              progress=progress,
                              cancel=cancel_ev.is_set,
                              approve=approve,
-                             asset_dir=os.path.join(self.cfg.output_dir, "assets"))
+                             asset_dir=os.path.join(self.cfg.output_dir, "assets"),
+                             approve_research=approve_research,
+                             approve_concept=approve_concept)
             self._deliver(chat_id, job_id, req, result)
         except Exception as exc:      # last-resort guard: never kill the service
             log.exception("job %s crashed", job_id)
@@ -443,11 +523,38 @@ class BotService(object):
         return bool(self._approvals.get(job_id, {}).get("decision"))
 
     # ---------------------------------------------------------------- delivery
+    # Statuses that mean "the staged workflow is waiting for a human decision".
+    # These are NOT failures: the job is intact and resumable.
+    PAUSED_STATUS_TEXT = {
+        "awaiting_research_review": (
+            "🔎 <b>Research ready for review</b>\n"
+            "Read the research report and evidence ledger, then reply "
+            "<code>/approve %s</code> to continue to the concept choices."),
+        "awaiting_concept_review": (
+            "🎞 <b>Concept choices ready</b>\n"
+            "Read <code>concepts.md</code>, then reply "
+            "<code>/approve %s A</code> (or <code>B</code> / <code>C</code>) to "
+            "choose the concept to script."),
+        "awaiting_approval": (
+            "📋 <b>Storyboard ready</b>\n"
+            "Reply <code>/approve %s</code> to approve the storyboard and render."),
+    }
+
     def _deliver(self, chat_id: int, job_id: str, req: JobRequest,
                  result: Dict[str, Any]) -> None:
         status = result.get("status")
         if status == "cancelled":
             self._send(chat_id, "🛑 Job <code>%s</code> cancelled." % job_id)
+            return
+        if status in self.PAUSED_STATUS_TEXT:
+            # A gate pause: report it as a decision waiting on the operator and
+            # send the artefacts to review. It is never shown as a failure.
+            self._send(chat_id, self.PAUSED_STATUS_TEXT[status] % job_id)
+            self._send_files(chat_id, job_id, result, documents_only=True)
+            return
+        if status == "busy":
+            self._send(chat_id, "⏳ Job <code>%s</code> is already being advanced "
+                                "by another worker; nothing was duplicated." % job_id)
             return
         if status != "completed":
             errs = "; ".join(result.get("errors") or []) or "see logs"
@@ -456,9 +563,27 @@ class BotService(object):
             self._send_files(chat_id, job_id, result, documents_only=True)
             return
 
+        delivery = result.get("delivery_state")
+        # Only the states that are explicitly *not* a finished film get the
+        # honest "delivered X instead" wording. An absent value means a legacy
+        # caller that predates ``delivery_state``; it keeps the original
+        # completed message so older integrations are not broken.
+        if delivery in ("preview_only", "no_render", "final_not_certified"):
+            label = {
+                "preview_only": "a preview clip only (no final film was rendered)",
+                "no_render": "research, evidence and script only (no video was rendered)",
+                "final_not_certified": ("a full-length file that FAILED final QA — it must "
+                                        "not be treated as a finished film"),
+            }.get(delivery, "no final film (%s)" % (delivery or "unknown"))
+            self._send(chat_id,
+                       "⚠️ Job <code>%s</code> finished the workflow.\n"
+                       "Delivered: <b>%s</b>." % (job_id, html.escape(label)))
+            self._send_files(chat_id, job_id, result, documents_only=False)
+            return
+
         v = result.get("validation") or {}
         self._send(chat_id,
-                   "✅ Job <code>%s</code> completed.\n"
+                   "✅ Job <code>%s</code> completed — a full film was produced.\n"
                    "• Video: %sx%s @ %sfps, %ss, %.1f MB\n"
                    "• Audio: %s\n"
                    "• ffprobe checks: %s"
@@ -476,7 +601,8 @@ class BotService(object):
                     documents_only: bool) -> None:
         job_dir = self.cfg.job_dir(job_id)
         docs = ["research_report.md", "evidence_ledger.csv", "concepts.md",
-                "script.md", "storyboard.md", "delivery_report.md"]
+                "script.md", "storyboard.md", "subtitles.srt",
+                "delivery_report.md"]
         for name in docs:
             path = os.path.join(job_dir, name)
             if os.path.isfile(path):
@@ -554,6 +680,7 @@ def build_application(cfg: Config, store: Optional[JobStore] = None) -> Applicat
         try:
             await app.bot.set_my_commands([
                 BotCommand("new", "Start a new research + video job"),
+                BotCommand("approve", "Continue a job awaiting your review"),
                 BotCommand("status", "Show active and recent jobs"),
                 BotCommand("jobs", "List your recent jobs"),
                 BotCommand("cancel", "Cancel your active job"),
@@ -583,6 +710,7 @@ def build_application(cfg: Config, store: Optional[JobStore] = None) -> Applicat
     app.add_handler(CommandHandler("jobs", service.cmd_jobs))
     app.add_handler(CommandHandler("cancel", service.cmd_cancel))
     app.add_handler(CommandHandler("new", service.cmd_new))
+    app.add_handler(CommandHandler("approve", service.cmd_approve))
     app.add_handler(CallbackQueryHandler(service.on_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, service.on_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, service.on_text))

@@ -192,6 +192,10 @@ def _headline(img: Image.Image, ctx: "IllusContext", scene: Dict[str, Any], p: f
 
 CREAM_TEXT = (248, 246, 241)
 
+# Prefix drawn on an evidence-gap banner, per language (kept out of the
+# localised picture's target language only when the film is in English).
+_GAP_PREFIX = {"en": "GAP", "ru": "ПРОБЕЛ", "uz": "BO'SHLIQ"}
+
 
 def _placeholder_mark(img: Image.Image, ctx: "IllusContext", text: str) -> None:
     if not text:
@@ -200,7 +204,9 @@ def _placeholder_mark(img: Image.Image, ctx: "IllusContext", text: str) -> None:
     w, h = img.size
     d.rectangle([int(w * 0.05), int(h * 0.055), int(w * 0.95), int(h * 0.105)],
                 outline=(220, 120, 80, 200), width=2)
-    d.text((int(w * 0.062), int(h * 0.065)), "GAP: " + text[:110],
+    lang = (getattr(getattr(ctx, "spec", None), "language", "en") or "en")[:2].lower()
+    prefix = _GAP_PREFIX.get(lang, "GAP")
+    d.text((int(w * 0.062), int(h * 0.065)), "%s: %s" % (prefix, text[:110]),
            font=ctx.fb.label(22), fill=(240, 170, 120, 235))
 
 

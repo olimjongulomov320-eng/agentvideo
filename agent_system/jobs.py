@@ -70,6 +70,18 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_job ON events(job_id, id);
 
+CREATE TABLE IF NOT EXISTS approvals (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id        TEXT NOT NULL,
+    stage         TEXT NOT NULL,           -- 'research' | 'concept' | 'storyboard'
+    decision      INTEGER NOT NULL,        -- 1=approved, 0=rejected
+    actor_ref     TEXT NOT NULL,           -- Telegram user ID who decided
+    timestamp     REAL NOT NULL,           -- when the decision was made
+    artifact_hash TEXT NOT NULL DEFAULT '',  -- SHA-256 of the artifact at approval time
+    idempotency_key TEXT NOT NULL DEFAULT '',  -- caller-generated token for dedupe
+    UNIQUE(job_id, stage)
+);
+
 CREATE TABLE IF NOT EXISTS seen_updates (
     update_id  INTEGER PRIMARY KEY,
     job_id     TEXT,
@@ -351,6 +363,80 @@ class JobStore(object):
             return cur.rowcount > 0
         finally:
             conn.close()
+
+    # ------------------------------------------------------------------ approvals
+    def record_approval(self, job_id: str, stage: str, decision: int,
+                        actor_ref: str, artifact_hash: str = "",
+                        idempotency_key: str = "") -> None:
+        """Persist a human decision at a staged gate.
+
+        ``decision`` is ``1`` for approved, ``0`` for rejected.
+        The ``artifact_hash`` is used for fail-closed checking: the render
+        step will only proceed if the current artifact hash matches the
+        hash that was recorded when the approval was given.
+        """
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO approvals (job_id, stage, decision, actor_ref,
+                   timestamp, artifact_hash, idempotency_key)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (job_id, stage, decision, actor_ref, time.time(),
+                 artifact_hash, idempotency_key))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def approval_exists(self, job_id: str, stage: str) -> bool:
+        """Return True if an approval record exists for this stage."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM approvals WHERE job_id=? AND stage=? LIMIT 1",
+                (job_id, stage)).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+
+    def get_approval_hash(self, job_id: str, stage: str) -> str:
+        """Return the artifact_hash recorded at approval time, or ''."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT artifact_hash FROM approvals WHERE job_id=? AND stage=? LIMIT 1",
+                (job_id, stage)).fetchone()
+        finally:
+            conn.close()
+        return row["artifact_hash"] if row else ""
+
+    def delete_approval(self, job_id: str, stage: str) -> None:
+        """Remove the approval record for one stage.
+
+        Used when the artefact the approval covered changes: the old sign-off
+        can no longer cover the new artefact, so it is withdrawn rather than
+        left to look valid. Only the named stage is removed, so an approved
+        research or concept decision is never thrown away by a later change.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM approvals WHERE job_id=? AND stage=?",
+                         (job_id, stage))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def approve_record(self, job_id: str, stage: str) -> Optional[Dict[str, Any]]:
+        """Return the stored approval record for a stage, or ``None``."""
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT job_id, stage, decision, actor_ref, timestamp, "
+                "artifact_hash, idempotency_key FROM approvals "
+                "WHERE job_id=? AND stage=? LIMIT 1",
+                (job_id, stage)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------ recovery
     def recover_interrupted(self) -> List[str]:

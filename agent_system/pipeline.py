@@ -67,6 +67,7 @@ from .config import PRODUCTION_PROFILE
 from .jobs import RESUMABLE_STATES
 from .orchestrator import (
     Cancelled, JobRequest, _delivery_report, _preview_spec, _write,
+    final_qa_checks,
 )
 from .research import ledger_csv, load_raw, report_markdown, research_firm
 from .security import redact
@@ -84,6 +85,18 @@ STATUS_EVIDENCE_GATE = "awaiting_research_review"
 STATUS_CONCEPT_GATE = "awaiting_concept_review"
 STATUS_STORY_GATE = "awaiting_approval"
 PAUSED_STATUSES = (STATUS_EVIDENCE_GATE, STATUS_CONCEPT_GATE, STATUS_STORY_GATE)
+
+# The artefacts a storyboard approval covers. The approval's stored hash is
+# computed over exactly these files; if any of them changes, the sign-off is
+# stale and must be re-obtained before a render is allowed to start.
+RESEARCH_ARTIFACTS = (
+    "research_report.md", "evidence_ledger.csv",
+    "research_raw.json", "research_summary.json",
+)
+CONCEPT_ARTIFACTS = RESEARCH_ARTIFACTS + ("concepts.md",)
+STORYBOARD_ARTIFACTS = CONCEPT_ARTIFACTS + (
+    "script.md", "storyboard.md", "scene_manifest.json",
+)
 
 STATE_FILENAME = "pipeline_state.json"
 CHRONOLOGY_DIRNAME = "chronology"
@@ -444,7 +457,8 @@ def script_stage(job_dir: str, request: JobRequest, research, revision_dir: str,
 
     written: Dict[str, Any] = {"artifacts": [], "facts": facts,
                                "bundle": bundle, "concept_id": concept_id}
-    for name in ("script.md", "storyboard.md", "scene_manifest.json"):
+    for name in ("script.md", "storyboard.md", "scene_manifest.json",
+                 "subtitles.srt"):
         src = bundle.get(name)
         if not src:
             continue
@@ -581,6 +595,7 @@ def advance_staged(cfg, store, job_id: str,
     result: Dict[str, Any] = {
         "job_id": job_id, "output_dir": job_dir, "artifacts": [],
         "status": job["status"], "errors": [], "warnings": [],
+        "delivery_state": "unknown",
     }
 
     def say(stage: str, pct: int, msg: str) -> None:
@@ -605,18 +620,34 @@ def advance_staged(cfg, store, job_id: str,
     # -------- record the decisions this call carries (before choosing a step)
     approvals = dict(state.get("approvals") or {})
     if approve_research:
+        research_hash = _artifact_hash(job_dir, RESEARCH_ARTIFACTS)
         approvals["research"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                 "note": note}
+                                 "note": note, "artifact_hash": research_hash}
         store.log_event(job_id, "approval", "research approved: %s" % (note or "-"))
+        store.record_approval(job_id, "research", 1,
+                              actor_ref=str(store.get(job_id).get("user_id", 0)),
+                              artifact_hash=research_hash,
+                              idempotency_key="")
     if approve_concept:
+        concept_hash = _artifact_hash(job_dir, CONCEPT_ARTIFACTS)
         approvals["concept"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                "concept": approve_concept, "note": note}
+                                "concept": approve_concept, "note": note,
+                                "artifact_hash": concept_hash}
         store.log_event(job_id, "approval",
                         "concept approved: %s" % approve_concept)
+        store.record_approval(job_id, "concept", 1,
+                              actor_ref=str(store.get(job_id).get("user_id", 0)),
+                              artifact_hash=concept_hash,
+                              idempotency_key="")
     if approve_storyboard:
+        storyboard_hash = _artifact_hash(job_dir, STORYBOARD_ARTIFACTS)
         approvals["storyboard"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                   "note": note}
+                                   "note": note, "artifact_hash": storyboard_hash}
         store.log_event(job_id, "approval", "storyboard approved: %s" % (note or "-"))
+        store.record_approval(job_id, "storyboard", 1,
+                              actor_ref=str(store.get(job_id).get("user_id", 0)),
+                              artifact_hash=storyboard_hash,
+                              idempotency_key="")
 
     new_transcripts = [os.path.abspath(p) for p in (transcripts or [])]
     known = list(state.get("transcripts") or [])
@@ -664,6 +695,27 @@ def advance_staged(cfg, store, job_id: str,
     # The final gate may be answered by a live callback (the bot's
     # approve/reject buttons). The research and concept gates have no callback:
     # they exist precisely so a person reads the findings before continuing.
+
+    # ---- fail-closed approval check (storyboard gate).
+    # A render may only start when a *persisted* storyboard approval exists and
+    # the artefacts it covered are byte-for-byte unchanged since sign-off. A
+    # hash mismatch (or a state-file approval with no matching persisted record)
+    # means the sign-off is stale: it is withdrawn and the job pauses at the
+    # gate instead of rendering evidence nobody approved.
+    if step == STEP_RENDER:
+        current_hash = _artifact_hash(job_dir, STORYBOARD_ARTIFACTS)
+        stored_hash = store.get_approval_hash(job_id, "storyboard")
+        if "storyboard" in approvals and stored_hash != current_hash:
+            store.delete_approval(job_id, "storyboard")
+            approvals.pop("storyboard", None)
+            state = write_state(job_dir, approvals=approvals)
+            store.log_event(job_id, "approval",
+                            "storyboard approval withdrawn: the signed-off "
+                            "artefacts changed or were never persisted")
+            result["warnings"].append(
+                "the storyboard approval was withdrawn because the evidence "
+                "behind it changed; it must be approved again before rendering")
+
     if (step == STEP_RENDER and approve is not None
             and "storyboard" not in approvals):
         payload = {"job_id": job_id, "firm": request.firm_name,
@@ -672,16 +724,27 @@ def advance_staged(cfg, store, job_id: str,
                    "gaps": _spec_gaps(job_dir),
                    "preview": result.get("preview"), "scenes": _spec_scenes(job_dir)}
         if bool(approve(payload)):
+            storyboard_hash = _artifact_hash(job_dir, STORYBOARD_ARTIFACTS)
             approvals["storyboard"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                       "note": "approved via callback"}
+                                       "note": "approved via callback",
+                                       "artifact_hash": storyboard_hash}
             state = write_state(job_dir, approvals=approvals)
+            store.record_approval(job_id, "storyboard", 1,
+                                  actor_ref=str(store.get(job_id).get("user_id", 0)),
+                                  artifact_hash=storyboard_hash,
+                                  idempotency_key="")
+            store.log_event(job_id, "approval",
+                            "storyboard approved via callback (hash %s)"
+                            % storyboard_hash[:12])
         else:
             store.set_status(job_id, "cancelled", "storyboard rejected by user")
             result["status"] = "cancelled"
+            result["delivery_state"] = "rejected"
             return result
 
     if step == "done":
         result["status"] = job["status"]
+        result["delivery_state"] = "already_complete"
         result["warnings"].append("this job has already run the whole staged "
                                   "workflow; nothing to do")
         return result
@@ -700,11 +763,13 @@ def advance_staged(cfg, store, job_id: str,
         fresh = store.get(job_id) or {}
         if fresh.get("status") in ("completed", "cancelled", "failed") and not force:
             result["status"] = fresh.get("status", "unknown")
+            result["delivery_state"] = "refused"
             result["errors"].append(
                 "job is %s; refusing to advance it (pass force=True to resume a "
                 "failed job)" % fresh.get("status"))
             return result
         result["status"] = "busy"
+        result["delivery_state"] = "busy"
         result["warnings"].append(
             "another worker holds this job (status=%s); no work was done"
             % fresh.get("status"))
@@ -765,6 +830,7 @@ def advance_staged(cfg, store, job_id: str,
                 if "storyboard" in approvals_now:
                     approvals_now.pop("storyboard")
                     write_state(job_dir, approvals=approvals_now)
+                    store.delete_approval(job_id, "storyboard")
                     approvals = approvals_now
                     store.log_event(job_id, "approval",
                                     "storyboard approval withdrawn: the "
@@ -785,8 +851,26 @@ def advance_staged(cfg, store, job_id: str,
     except Cancelled:
         store.set_status(job_id, "cancelled", "cancelled during %s" % step)
         result["status"] = "cancelled"
+        result["delivery_state"] = "cancelled"
         result["warnings"].append("cancelled by user")
         return result
+
+
+def _artifact_hash(job_dir: str, files: Sequence[str]) -> str:
+    """Compute SHA-256 of the concatenated contents of ``files`` relative to ``job_dir``.
+
+    Returns hex digest.  An empty ``files`` list yields a constant sentinel so that
+    an un-approved gate can always be detected as "missing" rather than "hash-equal".
+    """
+    h = hashlib.sha256()
+    any_file = False
+    for f in files:
+        path = os.path.join(job_dir, f)
+        if os.path.isfile(path):
+            any_file = True
+            with open(path, "rb") as ph:
+                h.update(ph.read())
+    return h.hexdigest() if any_file else ""
 
 
 def _pause(store, job_id: str, step: str, status: str,
@@ -804,6 +888,10 @@ def _pause(store, job_id: str, step: str, status: str,
     result["gate"] = gate
     result["awaiting"] = status
     result["next_step"] = step
+    # Delivery readiness is tracked separately from ``status`` (which keeps the
+    # historical "awaiting_*" value the existing callers/tests expect). A paused
+    # job has delivered *nothing* watchable yet.
+    result["delivery_state"] = "paused"
     return result
 
 
@@ -1036,6 +1124,7 @@ def _run_render(**kw: Any) -> Dict[str, Any]:
             _delivery_report(job_id, request, research, facts, result,
                              result.get("preview_validation"), info))))
         result["status"] = "completed"
+        result["delivery_state"] = "preview_only"
         return {"terminal": True, "result": result, "done": True}
 
     if not kw["enable_render"]:
@@ -1049,12 +1138,14 @@ def _run_render(**kw: Any) -> Dict[str, Any]:
             os.path.join(job_dir, "delivery_report.md"),
             _delivery_report(job_id, request, research, facts, result, None, info))))
         result["status"] = "completed"
+        result["delivery_state"] = "no_render"
         return {"terminal": True, "result": result, "done": True}
 
     if not info["ready"]:
         msg = "backend %r is not ready: %s" % (spec.style, "; ".join(info["reasons"]))
         store.fail(job_id, msg)
         result["status"] = "failed"
+        result["delivery_state"] = "failed"
         result["errors"].append(msg)
         _write(os.path.join(job_dir, "delivery_report.md"),
                _delivery_report(job_id, request, research, facts, result, None, info))
@@ -1083,12 +1174,23 @@ def _run_render(**kw: Any) -> Dict[str, Any]:
         msg = redact("%s: %s" % (type(exc).__name__, exc))[:1500]
         store.fail(job_id, msg)
         result["status"] = "failed"
+        result["delivery_state"] = "failed"
         result["errors"].append(msg)
         _write(os.path.join(job_dir, "delivery_report.md"),
                _delivery_report(job_id, request, research, facts, result, None, info))
         return {"terminal": True, "result": result, "done": False}
 
     result["status"] = "completed"
+    # Fail-closed: only a render that passes every final check is certified as a
+    # publishable final. Otherwise the file exists for review but is honestly
+    # reported as not certified (and it keeps the demo watermark).
+    result["final_qa"] = final_qa_checks(spec, result.get("validation"), job_dir, request)
+    if result["final_qa"]["certified"]:
+        result["delivery_state"] = "final_ready"
+    else:
+        result["delivery_state"] = "final_not_certified"
+        for b in result["final_qa"]["blockers"]:
+            result["warnings"].append("final QA: " + b)
     store.set_status(job_id, "completed", "finished", 100)
     result["artifacts"].append(os.path.basename(_write(
         os.path.join(job_dir, "delivery_report.md"),

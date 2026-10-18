@@ -37,10 +37,14 @@ import unittest
 
 from agent_system import chronology as chronology_mod
 from agent_system import pipeline
+from agent_system import story as story_mod
 from agent_system import transcripts as transcripts_mod
 from agent_system.config import Config
 from agent_system.jobs import JobStore
-from agent_system.orchestrator import JobRequest, run_job, sanitize_request
+from agent_system.orchestrator import (
+    JobRequest, _preview_spec, final_qa_checks, run_job, sanitize_request,
+)
+from agent_system.video import spec as video_spec
 from tests.fakes import html_pages
 
 FIRM = "Acme Legal LLP"
@@ -1060,6 +1064,217 @@ class TestChangedEvidenceRequiresReapproval(StagedBase):
                       "the concept selection is a choice of approach and survives")
         self.assertNotIn("storyboard", approvals)
         self.assertEqual(result["status"], pipeline.STATUS_STORY_GATE)
+
+
+class TestCriticalRepairRegressions(StagedBase):
+    """Regression tests for the critical-repair changes (fixes A–F).
+
+    Each test is offline and self-contained: temp DB, canned fetcher, no
+    network, no real Telegram call. They cover, in order:
+
+    * **B** — approvals are durable, hash-bound and fail-closed;
+    * **C** — delivery readiness is reported honestly, separately from
+      ``status``;
+    * **D** — captions and on-screen text are localised, with a synchronised
+      subtitle file;
+    * **E** — a preview is never presented as the final film;
+    * **F** — final QA is fail-closed and blocks on unresolved evidence.
+    """
+
+    # ------------------------------------------------------ Fix B: approvals
+    def test_approval_is_persisted_to_the_database(self):
+        jid, req = self.make_job()
+        self.advance(jid, req)                    # evidence runs → pauses at the gate
+        self.advance(jid, approve_research=True)  # now the artefacts exist to bind
+        rec = self.store.approve_record(jid, "research")
+        self.assertIsNotNone(rec, "the research decision must be durable, not just in memory")
+        self.assertEqual(rec["decision"], 1)
+        self.assertTrue(rec["artifact_hash"],
+                        "the decision must bind the artefact hash it was given for")
+
+    def test_render_is_blocked_without_a_persisted_approval(self):
+        """A state-file approval with no matching DB record is not trusted."""
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")            # stops at the render gate
+
+        # Forge a storyboard approval into the marker file only — exactly what a
+        # legacy job or a hand-edited state file would look like.
+        state = pipeline.read_state(self.job_dir(jid))
+        state["approvals"]["storyboard"] = {"at": "1970-01-01T00:00:00",
+                                            "note": "forged"}
+        pipeline.write_state(self.job_dir(jid), approvals=state["approvals"])
+
+        result = self.advance(jid, enable_render=False)
+        self.assertEqual(result["status"], pipeline.STATUS_STORY_GATE)
+        self.assertFalse(self.exists(jid, "final.mp4"),
+                         "no render may start on an unpersisted approval")
+        self.assertNotIn("storyboard",
+                         pipeline.read_state(self.job_dir(jid))["approvals"],
+                         "the unpersisted approval must be withdrawn")
+        self.assertTrue(any("withdrawn" in w for w in result.get("warnings", [])),
+                        result.get("warnings"))
+
+    def test_changed_artifacts_withdraw_a_persisted_approval(self):
+        """An approval cannot outlive the exact artefacts it signed off."""
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")
+        jdir = self.job_dir(jid)
+
+        # Approve the storyboard against the current artefacts.
+        current = pipeline._artifact_hash(jdir, pipeline.STORYBOARD_ARTIFACTS)
+        self.assertTrue(current)
+        self.store.record_approval(jid, "storyboard", 1, actor_ref="1",
+                                   artifact_hash=current)
+        state = pipeline.read_state(jdir)
+        state["approvals"]["storyboard"] = {"at": "x", "artifact_hash": current}
+        pipeline.write_state(jdir, approvals=state["approvals"])
+
+        # The signed-off script now changes.
+        with open(os.path.join(jdir, "script.md"), "a", encoding="utf-8") as fh:
+            fh.write("\n<!-- edited after approval -->\n")
+
+        result = self.advance(jid, enable_render=False)
+        self.assertNotIn("storyboard",
+                         pipeline.read_state(jdir)["approvals"])
+        self.assertIsNone(self.store.approve_record(jid, "storyboard"),
+                          "the stale DB record must be deleted, not left valid")
+        self.assertEqual(result["status"], pipeline.STATUS_STORY_GATE)
+
+    def test_reapproval_replaces_the_record_without_error(self):
+        """Re-signing a stage (restart / force) must not raise on the UNIQUE key."""
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")
+        self.advance(jid, approve_storyboard=True, enable_render=False)
+        self.assertIsNotNone(self.store.approve_record(jid, "storyboard"))
+
+        # A second decision for the same (job, stage) replaces the first.
+        self.store.record_approval(jid, "storyboard", 1, actor_ref="1",
+                                   artifact_hash="second-hash")
+        rec = self.store.approve_record(jid, "storyboard")
+        self.assertEqual(rec["artifact_hash"], "second-hash")
+
+    # --------------------------------------------------- Fix C: delivery_state
+    def test_paused_job_reports_paused_delivery_state(self):
+        jid, req = self.make_job()
+        result = self.advance(jid, req)                   # no approval → pauses
+        self.assertEqual(result["status"], pipeline.STATUS_EVIDENCE_GATE)
+        self.assertEqual(result["delivery_state"], "paused")
+
+    def test_no_render_job_reports_no_render_delivery_state(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True, enable_render=False)
+        self.advance(jid, approve_concept="A", enable_render=False)
+        result = self.advance(jid, approve_storyboard=True, enable_render=False)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["delivery_state"], "no_render",
+                         "a script-only run must never claim a finished film")
+
+    def test_completed_run_reports_delivery_state_consistent_with_final_qa(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")
+        result = self.advance(jid, approve_storyboard=True)
+        self.assertEqual(result["status"], "completed", result.get("errors"))
+        self.assertIn("final_qa", result)
+        expected = ("final_ready" if result["final_qa"]["certified"]
+                    else "final_not_certified")
+        self.assertEqual(result["delivery_state"], expected)
+
+    # -------------------------------------- Fix D: localisation and subtitles
+    def test_subtitles_are_written_in_the_target_language(self):
+        jid, req = self.make_job(language="uz")
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A")
+        path = os.path.join(self.job_dir(jid), "subtitles.srt")
+        self.assertTrue(os.path.isfile(path), "a subtitle file must accompany the script")
+        with open(path, "r", encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("Har kuni odamlar", text, "the captions must be in Uzbek")
+        self.assertNotIn("Every day, people", text,
+                         "no English source text may leak into the Uzbek output")
+
+    def test_scene_headings_are_localised(self):
+        facts = story_mod.Facts(firm_name="Acme Legal LLP")
+        uz = [s["heading"] for s in story_mod.build_scenes("Acme Legal LLP", facts,
+                                                           "uz", 21.0)]
+        en = [s["heading"] for s in story_mod.build_scenes("Acme Legal LLP", facts,
+                                                           "en", 21.0)]
+        self.assertIn("Faoliyat", uz)
+        self.assertIn("Practice", en)
+        self.assertNotIn("Practice", uz,
+                         "an English heading must never appear in an Uzbek film")
+
+    def test_srt_cues_follow_the_scene_timeline(self):
+        facts = story_mod.Facts(firm_name="Acme Legal LLP")
+        scenes = story_mod.build_scenes("Acme Legal LLP", facts, "en", 21.0)
+        srt = story_mod.srt_from_scenes(scenes)
+        cues = [b for b in srt.strip().split("\n\n") if b.strip()]
+        self.assertGreaterEqual(len(cues), 1)
+        self.assertTrue(cues[0].startswith("1\n00:00:00,000 -->"), cues[0])
+        for cue in cues:
+            start, end = cue.splitlines()[1].split(" --> ")
+            self.assertLess(start, end, "every cue must have a positive duration")
+
+    # -------------------------------------------- Fix E: preview vs final
+    def test_preview_is_never_named_final(self):
+        jid, req = self.make_job()
+        self.advance(jid, req, approve_research=True)
+        self.advance(jid, approve_concept="A", enable_preview=True)
+        self.advance(jid, approve_storyboard=True, enable_preview=True)
+        self.assertTrue(self.exists(jid, "preview.mp4"))
+        self.assertTrue(self.exists(jid, "final.mp4"))
+        self.assertNotEqual(
+            os.path.getsize(os.path.join(self.job_dir(jid), "preview.mp4")),
+            os.path.getsize(os.path.join(self.job_dir(jid), "final.mp4")),
+            "the preview and the final must be distinct files")
+
+        with open(os.path.join(self.job_dir(jid), "scene_manifest.json"),
+                  "r", encoding="utf-8") as fh:
+            spec, _errs = video_spec.validate_render_spec(json.load(fh))
+        preview = _preview_spec(spec)
+        self.assertEqual(preview.output_name, "preview.mp4",
+                         "a preview must name itself preview.mp4")
+        self.assertIn("PREVIEW", preview.watermark.upper(),
+                      "a preview must keep a visible demo watermark")
+
+    # ------------------------------------------------- Fix F: fail-closed QA
+    def _spec_with(self, scenes):
+        manifest = {"firm_name": "Acme Legal LLP", "language": "en",
+                    "style": "motion", "scenes": scenes,
+                    "watermark": "DEMO / CONCEPT PREVIEW"}
+        spec, _errs = video_spec.validate_render_spec(manifest)
+        return spec
+
+    def _srt_dir(self):
+        d = tempfile.mkdtemp(prefix="qa_srt_")
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "subtitles.srt"), "w", encoding="utf-8") as fh:
+            fh.write("1\n00:00:00,000 --> 00:00:01,000\nhello\n")
+        return d
+
+    def test_final_qa_blocks_on_gap_markers(self):
+        facts = story_mod.Facts(firm_name="Acme Legal LLP")     # no facts → gaps
+        scenes = story_mod.build_scenes("Acme Legal LLP", facts, "en", 21.0)
+        spec = self._spec_with(scenes)
+        qa = final_qa_checks(spec, {"ok": True, "audio_codec": "aac"},
+                             self._srt_dir(), JobRequest())
+        self.assertFalse(qa["certified"])
+        self.assertTrue(any("gap marker" in b for b in qa["blockers"]),
+                        qa["blockers"])
+
+    def test_final_qa_certifies_a_clean_spec(self):
+        facts = story_mod.Facts(firm_name="Acme Legal LLP")
+        scenes = story_mod.build_scenes("Acme Legal LLP", facts, "en", 21.0)
+        for s in scenes:                                        # fill every gap
+            s["needs"] = []
+            s["placeholder"] = False
+        spec = self._spec_with(scenes)
+        qa = final_qa_checks(spec, {"ok": True, "audio_codec": "aac"},
+                             self._srt_dir(), JobRequest())
+        self.assertTrue(qa["certified"], qa["blockers"])
 
 
 if __name__ == "__main__":

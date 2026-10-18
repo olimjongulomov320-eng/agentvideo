@@ -189,6 +189,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     result: Dict[str, Any] = {
         "job_id": job_id, "output_dir": job_dir, "artifacts": [],
         "status": "running", "errors": [], "warnings": [],
+        "delivery_state": "running",
     }
 
     def artifact(path: str) -> str:
@@ -279,6 +280,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
         except Cancelled:
             store.set_status(job_id, "cancelled", "cancelled during preview")
             result["status"] = "cancelled"
+            result["delivery_state"] = "cancelled"
             return result
         except Exception as exc:      # a preview must never sink the job
             result["warnings"].append("preview clip failed: %s" % exc)
@@ -288,6 +290,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
         say(STAGE_RENDER, 62, "preview-only job: skipping the full render")
         store.set_status(job_id, "completed", "preview only", 100)
         result["status"] = "completed"
+        result["delivery_state"] = "preview_only"
         artifact(_write(os.path.join(job_dir, "delivery_report.md"),
                         _delivery_report(job_id, request, research, facts, result,
                                          result.get("preview_validation"), info)))
@@ -303,6 +306,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
                          "completed without video (no-render mode)", 100)
         result["status"] = "completed"
         result["no_render"] = True
+        result["delivery_state"] = "no_render"
         result["warnings"].append(
             "no-render mode: no preview and no final video were rendered")
         artifact(_write(os.path.join(job_dir, "delivery_report.md"),
@@ -331,6 +335,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     if not approved:
         store.set_status(job_id, "cancelled", "storyboard rejected by user")
         result["status"] = "cancelled"
+        result["delivery_state"] = "rejected"
         return result
 
     # ---------------------------------------------------------------- render
@@ -340,6 +345,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
         msg = ("backend %r is not ready: %s" % (spec.style, "; ".join(info["reasons"])))
         store.fail(job_id, msg)
         result["status"] = "failed"
+        result["delivery_state"] = "failed"
         result["errors"].append(msg)
         _write(os.path.join(job_dir, "delivery_report.md"),
                _delivery_report(job_id, request, research, facts, result, None, info))
@@ -362,11 +368,13 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     except Cancelled:
         store.set_status(job_id, "cancelled", "cancelled during render")
         result["status"] = "cancelled"
+        result["delivery_state"] = "cancelled"
         return result
     except Exception as exc:
         msg = redact("%s: %s" % (type(exc).__name__, exc))[:1500]
         store.fail(job_id, msg)
         result["status"] = "failed"
+        result["delivery_state"] = "failed"
         result["errors"].append(msg)
         _write(os.path.join(job_dir, "delivery_report.md"),
                _delivery_report(job_id, request, research, facts, result, None, info))
@@ -376,6 +384,13 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     # Status is finalised *before* the report is written, so the document
     # records the real outcome rather than the state it was created in.
     result["status"] = "completed"
+    result["final_qa"] = final_qa_checks(spec, result.get("validation"), job_dir, request)
+    if result["final_qa"]["certified"]:
+        result["delivery_state"] = "final_ready"
+    else:
+        result["delivery_state"] = "final_not_certified"
+        for b in result["final_qa"]["blockers"]:
+            result["warnings"].append("final QA: " + b)
     store.set_status(job_id, "completed", "finished", 100)
     artifacts = _write(os.path.join(job_dir, "delivery_report.md"),
                        _delivery_report(job_id, request, research, facts, result,
@@ -408,6 +423,7 @@ def run_job(cfg, store, job_id: str, *args, **kwargs) -> Dict[str, Any]:
             pass
         return {"job_id": job_id, "output_dir": cfg.job_dir(job_id),
                 "artifacts": [], "status": "cancelled", "errors": [],
+                "delivery_state": "cancelled",
                 "warnings": ["cancelled by user"]}
 
 
@@ -432,7 +448,22 @@ def _delivery_report(job_id: str, request: JobRequest, research, facts,
         "",
         "**%s**" % result.get("status", "unknown").upper(),
         "",
+        "Delivery readiness: **%s**" % result.get("delivery_state", "unknown"),
+        "",
     ]
+    qa = result.get("final_qa")
+    if qa:
+        lines += ["## Final QA (fail-closed)", "",
+                  "Certified as a publishable final: **%s**" % bool(qa.get("certified")), ""]
+        for chk in qa.get("checks") or []:
+            lines.append("- [%s] %s — %s"
+                         % ("PASS" if chk.get("ok") else "FAIL",
+                            chk.get("check"), chk.get("detail")))
+        lines.append("")
+        if qa.get("blockers"):
+            lines += ["**Blocking issues (the file must not be presented as a "
+                      "finished film):**", ""] + \
+                     ["- %s" % b for b in qa["blockers"]] + [""]
     if result.get("no_render"):
         lines += ["**No video was rendered** — no-render mode was requested: "
                   "this delivery contains research, evidence, script and "
@@ -504,3 +535,52 @@ def _delivery_report(job_id: str, request: JobRequest, research, facts,
               "5. Approve before any external publication.",
               ""]
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------- final QA gate
+def final_qa_checks(spec, validation, job_dir: str,
+                    request: JobRequest) -> Dict[str, Any]:
+    """Fail-closed checks a *publishable final* must pass.
+
+    The checks are deliberately data-driven — the render specification, the
+    ffprobe validation and the files actually produced — so they are
+    deterministic and introduce no new failure modes inside the render itself.
+    Any failure marks the output ``final_not_certified``: the file still exists
+    (so a human can review it), but it is never presented as a finished film.
+
+    A certified final means: the file is technically valid, **no scene still
+    shows an evidence-gap marker**, a synchronised subtitle file exists, and the
+    file carries an audio track. Until every one of those holds, the demo
+    watermark stays on the picture.
+    """
+    blockers: List[str] = []
+    checks: List[Dict[str, Any]] = []
+
+    def add(name: str, ok: bool, good: str, bad: str) -> None:
+        checks.append({"check": name, "ok": bool(ok), "detail": good if ok else bad})
+        if not ok:
+            blockers.append(bad)
+
+    v = validation or {}
+    add("technical", bool(v.get("ok")),
+        "the rendered file passed the technical (ffprobe) checks",
+        "the rendered file did not pass the technical (ffprobe) checks")
+
+    gap_scenes = [str(s.get("id") or "?") for s in (getattr(spec, "scenes", None) or [])
+                  if s.get("placeholder") or s.get("needs")]
+    add("no_gap_markers", not gap_scenes,
+        "no scene shows an evidence-gap marker",
+        "the film still shows evidence-gap markers on %d scene(s): %s"
+        % (len(gap_scenes), ", ".join(gap_scenes)))
+
+    srt = os.path.join(job_dir, "subtitles.srt")
+    has_srt = os.path.isfile(srt) and os.path.getsize(srt) > 0
+    add("subtitles", has_srt,
+        "a synchronised subtitle file (subtitles.srt) is present",
+        "no synchronised subtitle file (subtitles.srt) was produced")
+
+    add("audio", bool(v.get("audio_codec")),
+        "the file carries an audio track",
+        "the file has no audio track")
+
+    return {"certified": not blockers, "checks": checks, "blockers": blockers}

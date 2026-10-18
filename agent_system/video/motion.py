@@ -42,6 +42,29 @@ LIMITATIONS = [
 
 _YEAR = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
 
+# On-screen "kicker" labels, one set per language, so a localised film never
+# shows a stray English word burned into the picture.
+_KICKERS = {
+    "en": {"hook": "A law firm in Tashkent", "origin": "Origin",
+           "practice": "Practice", "achievements": "Record", "people": "People",
+           "office": "New office", "closing": "Since"},
+    "ru": {"hook": "Юридическая фирма в Ташкенте", "origin": "Истоки",
+           "practice": "Практика", "achievements": "Результаты", "people": "Люди",
+           "office": "Новый офис", "closing": "С"},
+    "uz": {"hook": "Toshkentdagi yuridik firma", "origin": "Tarix",
+           "practice": "Faoliyat", "achievements": "Natijalar", "people": "Odamlar",
+           "office": "Yangi ofis", "closing": "Yildan"},
+}
+
+# Prefix drawn on an evidence-gap banner, per language.
+_GAP_PREFIX = {"en": "GAP", "ru": "ПРОБЕЛ", "uz": "BO'SHLIQ"}
+
+
+def _lang_of(ctx: "MotionContext") -> str:
+    lang = (getattr(getattr(ctx, "spec", None), "language", "en") or "en")
+    lang = lang[:2].lower()
+    return lang if lang in _KICKERS else "en"
+
 
 class MotionContext(object):
     def __init__(self, spec: RenderSpec, asset_dir: str = ""):
@@ -93,7 +116,8 @@ def _base(ctx: MotionContext, variant: str = "navy") -> Image.Image:
     return design.build_background(ctx.w, ctx.h, variant).copy()
 
 
-def _placeholder_mark(img: Image.Image, fb: draw.FontBook, text: str) -> None:
+def _placeholder_mark(img: Image.Image, fb: draw.FontBook, text: str,
+                      lang: str = "en") -> None:
     """Draw an unmistakable gap marker on scenes with missing evidence."""
     if not text:
         return
@@ -103,7 +127,8 @@ def _placeholder_mark(img: Image.Image, fb: draw.FontBook, text: str) -> None:
     y = int(h * 0.865)
     d.rounded_rectangle([int(w * 0.06), y, int(w * 0.94), y + int(h * 0.062)],
                         radius=int(h * 0.008), fill=a + (235,))
-    d.text((int(w * 0.072), y + int(h * 0.014)), "GAP: " + text[:110],
+    prefix = _GAP_PREFIX.get(lang, "GAP")
+    d.text((int(w * 0.072), y + int(h * 0.014)), "%s: %s" % (prefix, text[:110]),
            font=fb.label(22), fill=(255, 250, 246, 255))
 
 
@@ -147,16 +172,9 @@ def _title(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> I
 
 
 def _kicker_text(scene: Dict[str, Any], ctx: MotionContext) -> str:
-    key = (scene.get("key") or "").strip()
-    return {
-        "hook": "A law firm in Tashkent",
-        "origin": "Origin",
-        "practice": "Practice",
-        "achievements": "Record",
-        "people": "People",
-        "office": "New office",
-        "closing": "Since",
-    }.get(key, key.replace("_", " ").title() if key else "")
+    return _KICKERS[_lang_of(ctx)].get(
+        (scene.get("key") or "").strip(),
+        (scene.get("key") or "").replace("_", " ").title())
 
 
 def _statement(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> Image.Image:
@@ -517,7 +535,7 @@ def _photo(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> I
     if big is None:
         img = _base(ctx, "slate")
         _placeholder_mark(img, ctx.fb, "photo asset '%s' not supplied"
-                          % (scene.get("asset") or "?"))
+                          % (scene.get("asset") or "?"), _lang_of(ctx))
     else:
         z = 1.0 + 0.06 * draw.ease_in_out(min(1.0, t / max(0.001, dur)))
         sw, sh = int(ctx.w * z), int(ctx.h * z)
@@ -563,7 +581,7 @@ PAINTERS = {
 def render_scene_frame(ctx: MotionContext, scene: Dict[str, Any], t: float) -> Image.Image:
     painter = PAINTERS.get(scene["kind"], _statement)
     img = painter(ctx, scene, t, float(scene["dur"]))
-    _placeholder_mark(img, ctx.fb, gap_banner_text(scene))
+    _placeholder_mark(img, ctx.fb, gap_banner_text(scene), _lang_of(ctx))
     draw.watermark(img, ctx.fb, ctx.spec.watermark)
     return img
 
