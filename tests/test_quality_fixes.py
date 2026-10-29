@@ -464,3 +464,23 @@ class TestProducerPackage(unittest.TestCase):
                         "Финальная фраза", "Проверка хронометража", "финальная проверка"):
             self.assertIn(heading, text)
         self.assertIn("16 yillik yo'l", text)
+
+
+class TestVoiceMix(unittest.TestCase):
+    def test_voice_and_music_mix_into_one_track(self):
+        import subprocess
+        from agent_system.video import common
+        tmp = tempfile.mkdtemp(prefix="mix_test_")
+        try:
+            vo = os.path.join(tmp, "vo.wav")
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=250:duration=3", vo], check=True)
+
+            class Audio(object):
+                music, voiceover, license, voice = None, vo, "synthesized_temporary", "synthetic"
+            out, meta = common.build_audio_track(os.path.join(tmp, "a.wav"), 4.0, Audio(), tmp)
+            self.assertTrue(os.path.isfile(out))
+            self.assertEqual(meta["voiceover"], "vo.wav")
+            self.assertTrue(any("ducked" in m for m in meta["mixing"]))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

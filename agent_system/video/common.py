@@ -203,9 +203,10 @@ def build_audio_track(out_path: str, seconds: float, spec_audio: Any,
             "-filter_complex",
             "[0:a]volume=0.9,highpass=f=45,lowpass=f=7000,aformat=sample_fmts=fltp:"
             "channel_layouts=stereo,aresample=48000[m];"
-            "[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000[v];"
-            "[m][v]sidechaincompress=threshold=0.03:ratio=5:attack=15:release=400[duck];"
-            "[duck][v]amix=inputs=2:normalize=0,alimiter=limit=0.95,"
+            "[1:a]aformat=sample_fmts=fltp:channel_layouts=stereo,aresample=48000,"
+            "asplit=2[v1][v2];"
+            "[m][v1]sidechaincompress=threshold=0.03:ratio=5:attack=15:release=400[duck];"
+            "[duck][v2]amix=inputs=2:normalize=0,alimiter=limit=0.95,"
             "loudnorm=I=-16:TP=-1.5:LRA=11[aout]",
             "-map", "[aout]", "-t", "%.3f" % seconds, "-ac", "2", "-ar", "48000", out_path,
         ]
@@ -225,6 +226,17 @@ def build_audio_track(out_path: str, seconds: float, spec_audio: Any,
             "-map", "[aout]", "-t", "%.3f" % seconds, "-ac", "2", "-ar", "48000", out_path,
         ]
     proc = run(cmd, timeout=900)
+    if proc.returncode != 0 and vo and os.path.isfile(vo):
+        # A voice-over that cannot be mixed must not cost the whole film: fall
+        # back to the music bed and say so in the manifest.
+        meta["mixing"].append("voice-over could not be mixed (%s) — film has music only"
+                              % proc.stderr.decode("utf-8", "ignore")[-120:].strip())
+        meta["voiceover"], meta["voice"] = None, "none"
+        class _NoVoice(object):
+            music, voiceover, license, voice = music, None, getattr(spec_audio, "license", ""), "none"
+        out, fallback_meta = build_audio_track(out_path, seconds, _NoVoice(), work_dir)
+        fallback_meta["mixing"] = meta["mixing"] + fallback_meta["mixing"]
+        return out, fallback_meta
     if proc.returncode != 0:
         raise RenderError("audio build failed: %s"
                           % proc.stderr.decode("utf-8", "ignore")[-600:])

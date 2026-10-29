@@ -515,7 +515,10 @@ def _delivery_report(job_id: str, request: JobRequest, research, facts,
               "- Commissioned photos/illustrations: **not supplied** — placeholders are marked.",
               "- Music: synthesized pad unless a licensed file was supplied "
               "(`synthesized_temporary` is recorded in the render manifest).",
-              "- Voice-over: no synthetic voice is used where no engine exists.",
+              "- Voice-over: synthetic voice (Microsoft Edge neural TTS) when `AGENT_TTS=edge` "
+              "is set and the service was reachable; otherwise none. The render manifest "
+              "(`audio_detail`) records which. A synthetic voice must be reviewed by a "
+              "native speaker before any public use.",
               ""]
 
     if validation:
