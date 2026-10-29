@@ -221,3 +221,10 @@ aside before running the full suite, then restore it.
 - Music is not synthesised or licensed; audio in QA fixtures is a silent track.
 - Real narration needs a human voice or a properly licensed TTS engine; `uz` is
   not available locally.
+
+## Voice-over (optional) and captions
+- Narration is always burned in as a caption; no watermark is ever drawn.
+- `AGENT_TTS=edge` (plus `pip install edge-tts`) adds a synthetic voice, including Uzbek
+  (`uz-UZ-MadinaNeural`). Narration text is sent to Microsoft's online speech service.
+  If the package is missing or the service is unreachable, the film is rendered without a
+  voice and the reason appears in the job warnings.

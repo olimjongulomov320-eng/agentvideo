@@ -311,3 +311,57 @@ class TestNoWatermark(unittest.TestCase):
         spec, _e = validate_render_spec({"firm": "X", "scenes": [
             {"id": "sc1", "kind": "statement", "dur": 6.0, "narration": "n"}]})
         self.assertEqual(spec.watermark, "")
+
+
+class TestVoiceOver(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="voice_test_")
+        os.environ.pop("AGENT_TTS", None)
+
+    def tearDown(self):
+        os.environ.pop("AGENT_TTS", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _spec(self):
+        spec, _e = validate_render_spec({"firm": "X", "language": "uz", "scenes": [
+            {"id": "sc1", "kind": "statement", "dur": 6.0, "narration": "Salom dunyo."},
+            {"id": "sc2", "kind": "title", "dur": 6.0, "narration": ""}]})
+        return spec
+
+    @staticmethod
+    def _fake_synth(text, voice, out):
+        import subprocess
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                        "sine=frequency=300:duration=2", out], check=True)
+
+    def test_off_by_default(self):
+        from agent_system import voice
+        spec = self._spec()
+        self.assertEqual(voice.attach(spec, self.tmp), "")
+        self.assertIsNone(spec.audio.voiceover)
+
+    def test_builds_a_scene_aligned_track(self):
+        from agent_system import voice
+        spec = self._spec()
+        note = voice.attach(spec, self.tmp, overlap=0.5, synth=self._fake_synth)
+        self.assertIn("uz-UZ", note)
+        self.assertTrue(os.path.isfile(spec.audio.voiceover))
+        self.assertEqual(spec.audio.voice, "synthetic")
+        self.assertGreater(voice._duration(spec.audio.voiceover), 9.0)
+
+    def test_engine_failure_means_no_voice_not_a_crash(self):
+        from agent_system import voice
+
+        def boom(*_a):
+            raise OSError("offline")
+        spec = self._spec()
+        note = voice.attach(spec, self.tmp, synth=boom)
+        self.assertIn("skipped", note)
+        self.assertIsNone(spec.audio.voiceover)
+
+    def test_missing_package_is_reported(self):
+        from agent_system import voice
+        os.environ["AGENT_TTS"] = "edge"
+        if voice.edge_installed():
+            self.skipTest("edge-tts is installed here")
+        self.assertIn("not installed", voice.attach(self._spec(), self.tmp))

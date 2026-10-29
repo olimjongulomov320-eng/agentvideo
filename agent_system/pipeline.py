@@ -63,6 +63,7 @@ from . import interviews as interviews_mod
 from . import story as story_mod
 from . import transcripts as transcripts_mod
 from . import video
+from . import voice as voice_mod
 from .config import PRODUCTION_PROFILE
 from .jobs import RESUMABLE_STATES
 from .orchestrator import (
@@ -1059,6 +1060,11 @@ def _run_script(**kw: Any) -> Dict[str, Any]:
     for e in spec_errors:
         result["warnings"].append("spec: " + e)
         say("script", 58, "spec: " + e)
+    voice_note = voice_mod.attach(
+        spec, os.path.join(kw["work_dir"], "voice"),
+        min(spec.transition_sec, min(s["dur"] for s in spec.scenes) * 0.4))
+    if voice_note and not spec.audio.voiceover:
+        result["warnings"].append("voice: " + voice_note)
     result["_spec"] = spec
     result["_facts"] = written["facts"]
     # Persist the *effective* render spec (including any caller override) so a

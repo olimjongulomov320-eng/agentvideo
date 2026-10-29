@@ -652,7 +652,7 @@ def render_scene_frame(ctx: MotionContext, scene: Dict[str, Any], t: float) -> I
     painter = PAINTERS.get(scene["kind"], _statement)
     img = painter(ctx, scene, t, float(scene["dur"]))
     _placeholder_mark(img, ctx.fb, gap_banner_text(scene), _lang_of(ctx))
-    if not ctx.spec.audio.voiceover and draw.narration_needs_caption(scene):
+    if draw.narration_needs_caption(scene):
         dur = float(scene["dur"])
         draw.caption(img, ctx.fb, scene["narration"],
                      draw.ramp(t, 0.9, 0.6) * draw.ramp(dur - t, 0.0, 0.5))

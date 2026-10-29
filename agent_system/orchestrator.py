@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from . import story as story_mod
 from . import video
+from . import voice as voice_mod
 from .config import PREVIEW_PROFILE, PRODUCTION_PROFILE
 from .research import ledger_csv, report_markdown, research_firm
 from .security import redact
@@ -259,6 +260,13 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
         for e in spec_errors:
             result["warnings"].append("spec: " + e)
             store.log_event(job_id, "warn", "spec: " + e)
+
+    voice_note = voice_mod.attach(
+        spec, os.path.join(work_dir, "voice"),
+        min(spec.transition_sec, min(s["dur"] for s in spec.scenes) * 0.4))
+    if voice_note:
+        (result["warnings"] if not spec.audio.voiceover else result.setdefault("notes", [])
+         ).append("voice: " + voice_note)
 
     # ------------------------------------------------------- preview clip first
     # Cheap sample rendered *before* the expensive pass so a human can look at

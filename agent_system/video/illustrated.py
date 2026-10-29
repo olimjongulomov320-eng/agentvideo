@@ -283,7 +283,7 @@ def render_scene_frame(ctx: IllusContext, scene: Dict[str, Any], t: float) -> Im
     if scene["kind"] not in ("endcard",):
         _headline(img, ctx, scene, p)
     _placeholder_mark(img, ctx, gap_banner_text(scene))
-    if not ctx.spec.audio.voiceover and draw.narration_needs_caption(scene):
+    if draw.narration_needs_caption(scene):
         draw.caption(img, ctx.fb, scene["narration"],
                      draw.ramp(t, 0.9, 0.6) * draw.ramp(dur - t, 0.0, 0.5), max_lines=2)
     draw.watermark(img, ctx.fb, ctx.spec.watermark)
