@@ -166,6 +166,7 @@ def extract_facts(result: ResearchResult, firm_name: str,
                 add("practice_areas", cleaned[:200], c, c.evidence_class)
 
     _extract_site_data_facts(result, facts)
+    _apply_confirmed_facts(facts, firm_name)
 
     if event_date:
         facts.items["event_date"] = Fact("event_date", event_date, "USER", "supplied",
@@ -221,6 +222,39 @@ def localise_text(text: str, lang: str) -> str:
         if re.search(pattern, low) and names[lang] not in found:
             found.append(names[lang])
     return ", ".join(found)
+
+
+CONFIRMED_KEYS = ("years_experience", "founding_year", "new_office", "address",
+                  "clients", "team_size", "achievement")
+
+
+def _confirmed_facts_path() -> str:
+    return os.environ.get("AGENT_CONFIRMED_FACTS") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "confirmed_facts.json")
+
+
+def _apply_confirmed_facts(facts: Facts, firm_name: str) -> None:
+    """Facts the operator has confirmed outright win over anything scraped.
+
+    ``confirmed_facts.json`` maps a firm name to values, e.g.
+    ``{"gsp law firm": {"years_experience": "16"}}``. They are recorded as
+    operator-confirmed, so a plain figure replaces the site's open-ended "16+".
+    """
+    try:
+        with open(_confirmed_facts_path(), "r", encoding="utf-8") as fh:
+            table = json.load(fh)
+    except (OSError, ValueError):
+        return
+    name = (firm_name or "").strip().lower()
+    for firm, values in (table or {}).items():
+        if not isinstance(values, dict) or str(firm).strip().lower() not in name \
+                and name not in str(firm).strip().lower():
+            continue
+        for key, value in values.items():
+            if key in CONFIRMED_KEYS and str(value).strip():
+                facts.items[key] = Fact(key, str(value).strip(), "OPERATOR",
+                                        "confirmed_facts.json", "CORROBORATED",
+                                        "confirmed by the operator")
 
 
 _STAT_YEARS_RE = re.compile(r"(?i)^(\d+\+?)\s*(?:лет|года?|years?|yil)\b")
@@ -307,6 +341,7 @@ NARR = {
         "h_record": "Record",
         "h_people": "People",
         "origin_years": "By its own account, {firm} has been working for more than {n} years.",
+        "origin_years_exact": "{firm} has been working for {n} years.",
         "ach_stats": "By the firm's own figures: {parts}.",
         "n_clients": "{n} clients", "n_lawyers": "{n} lawyers",
         "office_addr": "You will find us at {a}.",
@@ -329,6 +364,7 @@ NARR = {
         "h_record": "Результаты",
         "h_people": "Люди",
         "origin_years": "По данным самой фирмы, {firm} работает более {n} лет.",
+        "origin_years_exact": "{firm} работает уже {n} лет.",
         "ach_stats": "По данным фирмы: {parts}.",
         "n_clients": "{n} клиентов", "n_lawyers": "{n} адвокатов",
         "office_addr": "Мы находимся по адресу: {a}.",
@@ -351,6 +387,7 @@ NARR = {
         "h_record": "Natijalar",
         "h_people": "Odamlar",
         "origin_years": "Firma ma'lumotiga ko'ra, {firm} {n} yildan ortiq faoliyat yuritmoqda.",
+        "origin_years_exact": "{firm} {n} yildan beri faoliyat yuritmoqda.",
         "ach_stats": "Firma ma'lumotiga ko'ra: {parts}.",
         "n_clients": "{n} mijoz", "n_lawyers": "{n} advokat",
         "office_addr": "Manzilimiz: {a}.",
@@ -382,7 +419,9 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
         if year:
             narration = t["origin"].format(firm=firm, year=year)
         elif years:
-            narration = t["origin_years"].format(firm=firm, n=years.rstrip("+"))
+            # "16+" is an open-ended claim; a plain "16" has been confirmed exactly.
+            tpl = t["origin_years"] if years.endswith("+") else t["origin_years_exact"]
+            narration = tpl.format(firm=firm, n=years.rstrip("+"))
             heading, sub = years, firm
         else:
             narration = t["origin_no_year"].format(firm=firm, ph=t["ph_year"])

@@ -11,6 +11,7 @@ assets (commissioned artwork) can replace any layer via ``scene["asset"]``.
 """
 import math
 import os
+import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
@@ -172,24 +173,6 @@ def _hills(d: ImageDraw.ImageDraw, ctx: "IllusContext", off: float, base: float,
     d.polygon(pts, fill=color)
 
 
-def _headline(img: Image.Image, ctx: "IllusContext", scene: Dict[str, Any], p: float,
-              dark_text: bool = True) -> None:
-    d = ImageDraw.Draw(img, "RGBA")
-    fb = ctx.fb
-    band_y = ctx.h * 0.70
-    a = int(180 * p)
-    d.rectangle([0, band_y, ctx.w * min(1.0, p * 1.2), band_y + ctx.h * 0.16],
-                fill=(8, 27, 38, a))
-    if scene["heading"]:
-        draw.draw_tracked(d, (ctx.w * 0.05, band_y + ctx.h * 0.025), scene["heading"][:42],
-                          fb.display(56), CREAM_TEXT + (int(255 * p),), tracking=0.5)
-    if scene["sub"]:
-        lines = draw.wrap(d, scene["sub"], fb.serif_regular(30), ctx.w * 0.7)
-        if lines:
-            draw.draw_tracked(d, (ctx.w * 0.05, band_y + ctx.h * 0.098), lines[0],
-                              fb.serif_regular(30), ACCENT2 + (int(255 * p),), tracking=0.4)
-
-
 CREAM_TEXT = (248, 246, 241)
 
 # Prefix drawn on an evidence-gap banner, per language (kept out of the
@@ -210,80 +193,412 @@ def _placeholder_mark(img: Image.Image, ctx: "IllusContext", text: str) -> None:
            font=ctx.fb.label(22), fill=(240, 170, 120, 235))
 
 
-# ---------------------------------------------------------------- scene painter
-def render_illustration(ctx: IllusContext, scene: Dict[str, Any], t: float) -> Image.Image:
+# ---------------------------------------------------------------- icons
+# Flat pictograms drawn from primitives; one per practice area keyword.
+_ICON_RULES = [
+    (r"kiber|cyber|киберп|\bit\b|\bit |it-|it va|ит-", "lock"),
+    (r"m&a|korporativ|corporate|корпоратив", "building"),
+    (r"soliq|tax|налог", "coin"),
+    (r"bank|банк|finans|финанс", "columns"),
+    (r"nizo|dispute|спор|arbitra|арбитр", "scales"),
+    (r"bojxona|customs|таможен|jinoiy|criminal|уголов", "shield"),
+    (r"mehnat|labou?r|труд|shartnoma|contract|контракт|договор", "doc"),
+    (r"mulk|property|estate|недвижим|intellekt|intellectual|интеллект", "globe"),
+]
+_ICON_ORDER = ["scales", "building", "lock", "coin", "columns", "doc", "shield", "globe"]
+
+
+def _icon_for(label: str, index: int) -> str:
+    low = (label or "").lower()
+    for pattern, name in _ICON_RULES:
+        if re.search(pattern, low):
+            return name
+    return _ICON_ORDER[index % len(_ICON_ORDER)]
+
+
+def _draw_icon(d: ImageDraw.ImageDraw, name: str, cx: float, cy: float, s: float) -> None:
+    c, c2 = ACCENT2, (240, 244, 247)
+    lw = max(2, int(s * 0.045))
+    if name == "scales":
+        _scales(d, cx, cy, s, c)
+    elif name == "building":
+        d.rectangle([cx - s * 0.28, cy - s * 0.46, cx + s * 0.28, cy + s * 0.46], fill=c)
+        for r in range(4):
+            for k in range(3):
+                d.rectangle([cx - s * 0.20 + k * s * 0.15, cy - s * 0.36 + r * s * 0.2,
+                             cx - s * 0.12 + k * s * 0.15, cy - s * 0.26 + r * s * 0.2], fill=(14, 36, 50))
+    elif name == "lock":
+        d.pieslice([cx - s * 0.22, cy - s * 0.52, cx + s * 0.22, cy - s * 0.08], 180, 360, outline=c, width=lw * 2)
+        d.rounded_rectangle([cx - s * 0.32, cy - s * 0.18, cx + s * 0.32, cy + s * 0.46], radius=s * 0.06, fill=c)
+        d.ellipse([cx - s * 0.06, cy + s * 0.04, cx + s * 0.06, cy + s * 0.16], fill=(14, 36, 50))
+        d.rectangle([cx - s * 0.025, cy + s * 0.12, cx + s * 0.025, cy + s * 0.28], fill=(14, 36, 50))
+    elif name == "coin":
+        for k in range(3):
+            y = cy + s * (0.25 - 0.2 * k)
+            d.ellipse([cx - s * 0.34, y - s * 0.12, cx + s * 0.34, y + s * 0.12], fill=c, outline=(14, 36, 50), width=lw)
+    elif name == "columns":
+        d.polygon([(cx - s * 0.42, cy - s * 0.22), (cx, cy - s * 0.5), (cx + s * 0.42, cy - s * 0.22)], fill=c)
+        for k in range(4):
+            x = cx - s * 0.32 + k * s * 0.21
+            d.rectangle([x, cy - s * 0.16, x + s * 0.11, cy + s * 0.32], fill=c)
+        d.rectangle([cx - s * 0.44, cy + s * 0.36, cx + s * 0.44, cy + s * 0.46], fill=c)
+    elif name == "doc":
+        d.rounded_rectangle([cx - s * 0.3, cy - s * 0.46, cx + s * 0.3, cy + s * 0.46], radius=s * 0.05, fill=c2)
+        for k in range(5):
+            d.rectangle([cx - s * 0.2, cy - s * 0.3 + k * s * 0.15, cx + s * (0.2 - 0.08 * (k == 4)), cy - s * 0.26 + k * s * 0.15], fill=(120, 140, 155))
+        d.ellipse([cx + s * 0.06, cy + s * 0.18, cx + s * 0.32, cy + s * 0.44], fill=c)
+    elif name == "shield":
+        d.polygon([(cx - s * 0.36, cy - s * 0.4), (cx, cy - s * 0.52), (cx + s * 0.36, cy - s * 0.4),
+                   (cx + s * 0.32, cy + s * 0.12), (cx, cy + s * 0.5), (cx - s * 0.32, cy + s * 0.12)], fill=c)
+        d.line([(cx - s * 0.14, cy), (cx - s * 0.03, cy + s * 0.13), (cx + s * 0.18, cy - s * 0.14)],
+               fill=(14, 36, 50), width=lw * 2)
+    else:   # globe
+        d.ellipse([cx - s * 0.42, cy - s * 0.42, cx + s * 0.42, cy + s * 0.42], outline=c, width=lw * 2)
+        d.ellipse([cx - s * 0.18, cy - s * 0.42, cx + s * 0.18, cy + s * 0.42], outline=c, width=lw)
+        d.line([cx - s * 0.42, cy, cx + s * 0.42, cy], fill=c, width=lw)
+        d.arc([cx - s * 0.42, cy - s * 0.2, cx + s * 0.42, cy + s * 0.2], 0, 180, fill=c, width=lw)
+
+
+# ---------------------------------------------------------------- skies
+# The film moves from night to morning, so the palette follows the story arc.
+_PALETTES = {
+    "hook": ((10, 22, 40), (30, 62, 92), 0.0),
+    "origin": ((22, 46, 76), (96, 98, 120), 0.35),
+    "practice": ((30, 60, 92), (150, 120, 118), 0.55),
+    "achievements": ((34, 74, 106), (196, 150, 118), 0.7),
+    "people": ((44, 88, 120), (214, 176, 128), 0.8),
+    "office": ((54, 100, 132), (226, 196, 146), 0.9),
+    "closing": ((70, 118, 148), (244, 214, 160), 1.0),
+}
+
+
+def _sky_for(ctx: "IllusContext", key: str) -> Image.Image:
+    cache = ctx.__dict__.setdefault("_skies", {})
+    key = key if key in _PALETTES else "origin"
+    if key not in cache:
+        top, bot, sun = _PALETTES[key]
+        img = draw.gradient((ctx.w, ctx.h), top, bot, vertical=True)
+        cy = ctx.h * (0.52 - 0.27 * sun)
+        img = _sun(img, ctx.w * 0.74, cy, ctx.w * (0.12 + 0.06 * sun), 0.4 + 0.6 * sun)
+        cache[key] = img
+    return cache[key]
+
+
+def _stars(d: ImageDraw.ImageDraw, ctx: "IllusContext", t: float, amount: float) -> None:
+    rnd = 12345
+    for i in range(70):
+        rnd = (rnd * 1103515245 + 12345) % 2147483648
+        x = (rnd % 1000) / 1000.0 * ctx.w
+        rnd = (rnd * 1103515245 + 12345) % 2147483648
+        y = (rnd % 1000) / 1000.0 * ctx.h * 0.55
+        tw = 0.5 + 0.5 * math.sin(t * 2.0 + i)
+        a = int(200 * amount * tw)
+        r = 1 + (i % 3)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(255, 244, 214, a))
+
+
+def _cloud(d: ImageDraw.ImageDraw, x: float, y: float, s: float, a: int) -> None:
+    for dx, dy, r in ((0, 0, 0.5), (0.45, -0.12, 0.6), (0.95, 0, 0.45), (0.5, 0.1, 0.55)):
+        d.ellipse([x + dx * s - r * s * 0.5, y + dy * s - r * s * 0.35,
+                   x + dx * s + r * s * 0.5, y + dy * s + r * s * 0.35], fill=(255, 255, 255, a))
+
+
+def _backdrop(ctx: "IllusContext", key: str, t: float, dur: float, grow: float = 1.0) -> Image.Image:
+    """Sky, drifting clouds and three parallax skyline layers."""
     w, h = ctx.w, ctx.h
-    dur = max(0.001, float(scene["dur"]))
-    prog = draw.ease_in_out(max(0.0, min(1.0, t / dur)))
-    cam = (t / dur) if dur > 0 else 0.0
-
-    img = _sky(ctx).copy()
+    cam = t / dur
+    img = _sky_for(ctx, key).copy()
     d = ImageDraw.Draw(img, "RGBA")
-
-    kind = scene["kind"]
-    # ---- layer stack, back to front, each with its own parallax rate
-    if kind in ("statement", "endcard", "title", "timeline"):
-        _hills(d, ctx, -w * 0.05 * cam, h * 0.74, HILL, h * 0.055, 1.3)
-        _skyline(d, ctx, -w * 0.10 * cam, h * 0.76, (16, 44, 62), 3, 0.85, lit=0.5)
-        _hills(d, ctx, -w * 0.18 * cam, h * 0.88, (12, 34, 48), h * 0.04, 2.6)
-        img = _foreground_figures(ctx, img, cam, count=2 + int(prog * 2))
-    elif kind == "list":
-        _skyline(d, ctx, -w * 0.08 * cam, h * 0.80, (17, 48, 68), 5, 0.9, lit=0.6)
-        img = _books_layer(ctx, img, prog)
-    elif kind == "stat":
-        _hills(d, ctx, -w * 0.06 * cam, h * 0.82, HILL, h * 0.05, 0.7)
-        d2 = ImageDraw.Draw(img, "RGBA")
-        _graph(d2, w * 0.30, h * 0.80, w * 0.40, h * 0.34, draw.ease_out(draw.ramp(t, 0.4, 1.6)))
-    else:
-        _room(d, ctx, -w * 0.03 * cam)
-        img = _office_figures(ctx, img, prog)
-
-    return img
-
-
-def _foreground_figures(ctx: IllusContext, img: Image.Image, cam: float,
-                        count: int = 3, ground: float = 0.955) -> Image.Image:
-    d = ImageDraw.Draw(img, "RGBA")
-    w, h = ctx.w, ctx.h
-    for i in range(count):
-        x = w * (0.22 + 0.17 * i) - w * 0.04 * cam
-        s = h * 0.20
-        _figure(d, x, h * ground, s, (12, 30, 42))
-    return img
-
-
-def _office_figures(ctx: IllusContext, img: Image.Image, prog: float) -> Image.Image:
-    d = ImageDraw.Draw(img, "RGBA")
-    w, h = ctx.w, ctx.h
-    ground = h * 0.80
-    _figure(d, w * 0.34, ground, h * 0.26, (14, 34, 48))
-    _figure(d, w * 0.62, ground, h * 0.24, (20, 44, 60))
-    d.rectangle([w * 0.45, ground - h * 0.03, w * 0.55, ground], fill=(58, 82, 98))
-    if prog > 0.4:
-        _books(d, w * 0.47, ground - h * 0.03, h * 0.09)
-    return img
-
-
-def _books_layer(ctx: IllusContext, img: Image.Image, prog: float) -> Image.Image:
-    d = ImageDraw.Draw(img, "RGBA")
-    w, h = ctx.w, ctx.h
-    base = h * 0.86
+    night = 1.0 if key == "hook" else (0.4 if key == "origin" else 0.0)
+    if night:
+        _stars(d, ctx, t, night)
     for i in range(3):
-        p = draw.ramp(1.0 if prog > 0.2 * i else 0.0, 0, 1)
-        _books(d, w * (0.14 + 0.24 * i), base, h * (0.10 + 0.02 * i))
+        _cloud(d, (w * (0.15 + 0.38 * i) + t * (9 + 4 * i)) % (w * 1.3) - w * 0.15,
+               h * (0.14 + 0.07 * i), h * 0.20, 44 if night else 70)
+    sunrise = _PALETTES.get(key, _PALETTES["origin"])[2]
+    far = (int(24 + 14 * sunrise), int(54 + 16 * sunrise), int(76 + 12 * sunrise))
+    mid = (int(16 + 8 * sunrise), int(42 + 10 * sunrise), int(62 + 8 * sunrise))
+    _hills(d, ctx, -w * 0.04 * cam, h * 0.72, far, h * 0.05, 1.3)
+    _skyline(d, ctx, -w * 0.07 * cam, h * 0.74, far, 7, 0.8, lit=0.0)
+    _skyline_grow(d, ctx, -w * 0.12 * cam, h * 0.80, mid, 3, grow, lit=0.6 if night else 0.0, t=t)
+    _hills(d, ctx, -w * 0.18 * cam, h * 0.90, (11, 30, 44), h * 0.04, 2.6)
     return img
+
+
+def _skyline_grow(d, ctx, off, base, color, seed, grow, lit, t) -> None:
+    """Skyline whose towers rise one after another (grow 0 → 1)."""
+    w = ctx.w
+    x = -w * 0.1 + off
+    rnd = (seed * 2654435761) % 4294967296
+    i = 0
+    n_total = 22.0
+    while x < w * 1.1:
+        rnd = (rnd * 1103515245 + 12345) % 2147483648
+        bw = 60 + (rnd % 90) * 0.9
+        rnd = (rnd * 1103515245 + 12345) % 2147483648
+        bh = 120 + (rnd % 260) * 0.9
+        rise = max(0.0, min(1.0, grow * 1.6 - i / n_total))
+        if rise > 0:
+            # windows flicker on gradually in the night scenes
+            _building(d, x, base, bw, bh * draw.ease_out(rise), color,
+                      lit=lit * (0.5 + 0.5 * math.sin(t + i)), seed=seed)
+        x += bw * 0.92
+        i += 1
+
+
+# ---------------------------------------------------------------- text helpers
+def _txt(img: Image.Image, ctx: "IllusContext", x: float, y: float, text: str, font,
+         color, alpha: float, max_w: Optional[float] = None, line_h: float = 1.25,
+         align: str = "left", max_lines: int = 3) -> float:
+    """Wrapped text with alpha; returns the height used."""
+    if not text or alpha <= 0:
+        return 0.0
+    d = ImageDraw.Draw(img, "RGBA")
+    lines = draw.wrap(d, text, font, max_w or ctx.w * 0.8)[:max_lines]
+    lh = font.size * line_h
+    a = int(255 * min(1.0, alpha))
+    for i, ln in enumerate(lines):
+        lx = x if align == "left" else x - draw.text_width(d, ln, font) / (1 if align == "right" else 2)
+        d.text((lx, y + i * lh), ln, font=font, fill=tuple(color) + (a,))
+    return lh * len(lines)
+
+
+def _panel(img: Image.Image, box, alpha: float, radius: float = 18) -> None:
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rounded_rectangle(box, radius=radius, fill=(8, 24, 36, int(200 * alpha)),
+                        outline=ACCENT + (int(170 * alpha),), width=2)
+
+
+def _title_block(img, ctx, scene, t) -> float:
+    """Heading + sub at the top-left; returns the y where content may start."""
+    p = draw.ease_out(draw.ramp(t, 0.3, 0.8))
+    y = ctx.h * 0.075 + (1 - p) * ctx.h * 0.02
+    used = 0.0
+    if scene.get("heading"):
+        used += _txt(img, ctx, ctx.w * 0.06, y, scene["heading"][:60], ctx.fb.display(58),
+                     CREAM_TEXT, p, ctx.w * 0.7, max_lines=1)
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle([ctx.w * 0.06, y + used + ctx.h * 0.012,
+                 ctx.w * 0.06 + ctx.w * 0.09 * p, y + used + ctx.h * 0.018], fill=ACCENT + (255,))
+    return y + used + ctx.h * 0.04
+
+
+def _count(label: str, t: float, delay: float = 0.4, dur: float = 1.6) -> str:
+    """'1000+' counts up from 0; anything that is not a bare figure is unchanged."""
+    m = re.fullmatch(r"\s*(\d{1,6})(\+?)\s*", label or "")
+    if not m:
+        return label
+    v = int(round(int(m.group(1)) * draw.ease_out(draw.ramp(t, delay, dur))))
+    return "%d%s" % (v, m.group(2))
+
+
+# ---------------------------------------------------------------- scene painters
+def _scene_hook(ctx, scene, t, dur):
+    img = _backdrop(ctx, "hook", t, dur, grow=min(1.0, 0.35 + t / 3.0))
+    p = draw.ease_out(draw.ramp(t, 0.5, 1.0))
+    _txt(img, ctx, ctx.w * 0.06, ctx.h * 0.14 + (1 - p) * ctx.h * 0.03, scene["narration"],
+         ctx.fb.display(64), CREAM_TEXT, p, ctx.w * 0.62, line_h=1.2, max_lines=4)
+    return img
+
+
+def _scene_origin(ctx, scene, t, dur):
+    img = _backdrop(ctx, "origin", t, dur, grow=draw.ramp(t, 0.2, 2.6))
+    _title_block(img, ctx, dict(scene, heading=""), t)
+    label = (scene.get("heading") or "").strip()
+    big = _count(label, t)
+    p = draw.ease_out(draw.ramp(t, 0.4, 0.9))
+    if re.fullmatch(r"\s*\d{1,6}\+?\s*", label):
+        _panel(img, (ctx.w * 0.05, ctx.h * 0.12, ctx.w * 0.47, ctx.h * 0.50), p)
+        _txt(img, ctx, ctx.w * 0.07, ctx.h * 0.14, big, ctx.fb.display(190), ACCENT2, p, max_lines=1)
+        _txt(img, ctx, ctx.w * 0.07, ctx.h * 0.37, scene.get("sub") or "", ctx.fb.serif_regular(40),
+             CREAM_TEXT, draw.ramp(t, 1.0, 0.7), ctx.w * 0.38, max_lines=2)
+    else:
+        _title_block(img, ctx, scene, t)
+    return img
+
+
+def _split_items(scene) -> List[str]:
+    raw = scene.get("sub") or scene.get("heading") or ""
+    return [i.strip() for i in raw.split(",") if i.strip()][:5]
+
+
+def _scene_practice(ctx, scene, t, dur):
+    img = _backdrop(ctx, "practice", t, dur)
+    top = _title_block(img, ctx, scene, t)
+    items = _split_items(scene)
+    n = max(1, len(items))
+    cw, ch = ctx.w * 0.165, ctx.h * 0.40
+    gap = (ctx.w * 0.88 - cw * n) / max(1, n - 1) if n > 1 else 0
+    x0 = ctx.w * 0.06 if n > 1 else (ctx.w - cw) / 2
+    for i, label in enumerate(items):
+        p = draw.ease_out_back(draw.ramp(t, 0.5 + 0.28 * i, 0.8))
+        if p <= 0:
+            continue
+        x = x0 + i * (cw + gap)
+        y = max(top + ctx.h * 0.03, ctx.h * 0.27) + (1 - min(1.0, p)) * ctx.h * 0.08
+        a = min(1.0, p)
+        _panel(img, (x, y, x + cw, y + ch), a)
+        d = ImageDraw.Draw(img, "RGBA")
+        bob = math.sin(t * 2.2 + i) * ctx.h * 0.008
+        _draw_icon(d, _icon_for(label, i), x + cw / 2, y + ch * 0.36 + bob, ch * 0.34)
+        _txt(img, ctx, x + cw / 2, y + ch * 0.66, label, ctx.fb.serif_regular(36), CREAM_TEXT, a,
+             cw * 0.90, align="center", max_lines=3)
+    return img
+
+
+def _scene_stat(ctx, scene, t, dur):
+    img = _backdrop(ctx, "achievements", t, dur)
+    label = (scene.get("heading") or "").strip()
+    p = draw.ease_out(draw.ramp(t, 0.3, 0.8))
+    _panel(img, (ctx.w * 0.05, ctx.h * 0.12, ctx.w * 0.50, ctx.h * 0.52), p)
+    _txt(img, ctx, ctx.w * 0.07, ctx.h * 0.14, _count(label, t), ctx.fb.display(170), ACCENT2, p,
+         ctx.w * 0.42, max_lines=1)
+    _txt(img, ctx, ctx.w * 0.07, ctx.h * 0.36, scene.get("sub") or "", ctx.fb.serif_regular(38),
+         CREAM_TEXT, draw.ramp(t, 1.0, 0.7), ctx.w * 0.4, max_lines=2)
+    d = ImageDraw.Draw(img, "RGBA")
+    _graph(d, ctx.w * 0.56, ctx.h * 0.66, ctx.w * 0.36, ctx.h * 0.46,
+           draw.ease_out(draw.ramp(t, 0.5, 1.8)), bars=6)
+    # a figure per bar-top: the firm's people, rising with the results
+    for i in range(3):
+        _figure(d, ctx.w * (0.60 + 0.12 * i), ctx.h * 0.93, ctx.h * 0.16, (10, 28, 40))
+    return img
+
+
+def _circle_portrait(ctx, path: str, size: int) -> Optional[Image.Image]:
+    cache = ctx.__dict__.setdefault("_portraits", {})
+    if path not in cache:
+        try:
+            src = Image.open(path).convert("RGB")
+            sq = draw.cover(src, (size, size), anchor_y=0.25)
+            mask = Image.new("L", (size * 3, size * 3), 0)
+            ImageDraw.Draw(mask).ellipse([0, 0, size * 3 - 1, size * 3 - 1], fill=255)
+            mask = mask.resize((size, size), Image.LANCZOS)
+            out = sq.convert("RGBA")
+            out.putalpha(mask)
+            cache[path] = out
+        except Exception:
+            cache[path] = None
+    return cache[path]
+
+
+def _scene_people(ctx, scene, t, dur):
+    img = _backdrop(ctx, "people", t, dur)
+    _title_block(img, ctx, scene, t)
+    people = [p for p in (scene.get("portraits") or []) if os.path.isfile(p["file"])]
+    d = ImageDraw.Draw(img, "RGBA")
+    if people:
+        n = len(people)
+        size = int(ctx.h * 0.27)
+        gap = (ctx.w * 0.88 - size * n) / max(1, n + 1)
+        for i, person in enumerate(people):
+            p = draw.ease_out_back(draw.ramp(t, 0.5 + 0.3 * i, 0.8))
+            if p <= 0:
+                continue
+            pic = _circle_portrait(ctx, person["file"], size)
+            if pic is None:
+                continue
+            x = int(ctx.w * 0.06 + gap + i * (size + gap))
+            y = int(ctx.h * 0.30 + (1 - min(1.0, p)) * ctx.h * 0.08)
+            a = min(1.0, p)
+            d.ellipse([x - 8, y - 8, x + size + 8, y + size + 8], fill=ACCENT + (int(255 * a),))
+            img.paste(pic, (x, y), pic)
+            _txt(img, ctx, x + size / 2, y + size + ctx.h * 0.025, person["name"],
+                 ctx.fb.serif_regular(28), CREAM_TEXT, a, size * 1.12, align="center", max_lines=3)
+    else:
+        names = _split_items(scene)
+        for i, nm in enumerate(names[:4]):
+            p = draw.ease_out(draw.ramp(t, 0.5 + 0.3 * i, 0.8))
+            x = ctx.w * (0.18 + 0.2 * i)
+            _figure(d, x, ctx.h * 0.62, ctx.h * 0.28, (10, 28, 40))
+            _txt(img, ctx, x, ctx.h * 0.65, nm, ctx.fb.serif_regular(30), CREAM_TEXT, p,
+                 ctx.w * 0.18, align="center", max_lines=2)
+    return img
+
+
+def _pin(d, x: float, y: float, s: float, a: int = 255) -> None:
+    d.polygon([(x - s * 0.5, y - s * 1.3), (x + s * 0.5, y - s * 1.3), (x, y)],
+              fill=(214, 74, 60, a))
+    d.ellipse([x - s * 0.62, y - s * 2.0, x + s * 0.62, y - s * 0.76], fill=(214, 74, 60, a))
+    d.ellipse([x - s * 0.24, y - s * 1.62, x + s * 0.24, y - s * 1.14], fill=(255, 244, 230, a))
+
+
+def _scene_office(ctx, scene, t, dur):
+    w, h = ctx.w, ctx.h
+    img = _sky_for(ctx, "office").copy()
+    d = ImageDraw.Draw(img, "RGBA")
+    # stylised city map: blocks, avenues, a river
+    d.rectangle([0, h * 0.18, w, h], fill=(32, 62, 82))
+    rnd = 99
+    for gx in range(14):
+        for gy in range(8):
+            rnd = (rnd * 1103515245 + 12345) % 2147483648
+            if rnd % 5 == 0:
+                continue
+            bx, by = w * 0.04 + gx * w * 0.07, h * 0.22 + gy * h * 0.1
+            d.rounded_rectangle([bx, by, bx + w * 0.058, by + h * 0.082], radius=6,
+                                fill=(44, 78, 100) if rnd % 3 else (52, 92, 108))
+    d.line([(0, h * 0.5), (w * 0.35, h * 0.44), (w * 0.7, h * 0.58), (w, h * 0.5)],
+           fill=(92, 160, 196, 235), width=int(h * 0.05))
+    d.line([(w * 0.62, h * 0.18), (w * 0.5, h)], fill=(226, 196, 146, 200), width=int(h * 0.016))
+    pin_x, pin_y = w * 0.62, h * 0.60
+    drop = draw.ramp(t, 0.6, 0.7)
+    land = draw.ease_out(drop)
+    bounce = math.sin(max(0.0, t - 1.3) * 9) * math.exp(-max(0.0, t - 1.3) * 3) * h * 0.04
+    y = pin_y - (1 - land) * h * 0.5 - bounce
+    for k in range(3):                                  # ripples after landing
+        rp = draw.ramp(t, 1.3 + 0.35 * k, 1.4) % 1.0 if t > 1.3 else 0
+        if rp > 0:
+            r = h * 0.03 + rp * h * 0.14
+            d.ellipse([pin_x - r, pin_y - r * 0.4, pin_x + r, pin_y + r * 0.4],
+                      outline=(255, 244, 214, int(180 * (1 - rp))), width=3)
+    d.ellipse([pin_x - h * 0.03, pin_y - h * 0.01, pin_x + h * 0.03, pin_y + h * 0.012], fill=(0, 0, 0, 90))
+    _pin(d, pin_x, y, h * 0.045)
+    _title_block(img, ctx, dict(scene, heading=scene.get("heading") if scene.get("sub") else ""), t)
+    p = draw.ease_out(draw.ramp(t, 1.0, 0.8))
+    _panel(img, (w * 0.05, h * 0.30, w * 0.46, h * 0.52), p)
+    _txt(img, ctx, w * 0.07, h * 0.325, scene.get("sub") or scene.get("heading") or "",
+         ctx.fb.serif_regular(40), CREAM_TEXT, p, w * 0.37, max_lines=3)
+    return img
+
+
+def _scene_closing(ctx, scene, t, dur):
+    img = _backdrop(ctx, "closing", t, dur, grow=1.0)
+    p = draw.ease_out(draw.ramp(t, 0.5, 1.0))
+    d = ImageDraw.Draw(img, "RGBA")
+    d.rectangle([0, ctx.h * 0.18, ctx.w, ctx.h * 0.62], fill=(8, 24, 36, int(120 * p)))
+    _txt(img, ctx, ctx.w / 2, ctx.h * 0.29, ctx.spec.firm_name, ctx.fb.display(104),
+         CREAM_TEXT, p, ctx.w * 0.86, align="center", max_lines=2)
+    d.rectangle([ctx.w * 0.44, ctx.h * 0.50, ctx.w * (0.44 + 0.12 * p), ctx.h * 0.506],
+                fill=ACCENT + (255,))
+    return img
+
+
+_PAINTERS = {"hook": _scene_hook, "origin": _scene_origin, "practice": _scene_practice,
+             "achievements": _scene_stat, "people": _scene_people, "office": _scene_office,
+             "closing": _scene_closing}
+
+
+def _generic(ctx, scene, t, dur):
+    """Any other scene key: backdrop plus heading and sub."""
+    img = _backdrop(ctx, "origin", t, dur)
+    _title_block(img, ctx, scene, t)
+    _txt(img, ctx, ctx.w * 0.06, ctx.h * 0.24, scene.get("sub") or scene.get("narration") or "",
+         ctx.fb.serif_regular(40), CREAM_TEXT, draw.ramp(t, 0.8, 0.7), ctx.w * 0.6)
+    return img
+
+
+def render_illustration(ctx: IllusContext, scene: Dict[str, Any], t: float) -> Image.Image:
+    dur = max(0.001, float(scene["dur"]))
+    painter = _PAINTERS.get((scene.get("key") or "").strip(), _generic)
+    return painter(ctx, scene, t, dur)
 
 
 def render_scene_frame(ctx: IllusContext, scene: Dict[str, Any], t: float) -> Image.Image:
     img = render_illustration(ctx, scene, t)
     dur = max(0.001, float(scene["dur"]))
-    alpha = draw.scene_alpha(t, dur, fade_in=0.4, fade_out=0.4)
-    img = draw.apply_alpha(img, alpha)
-    p = draw.ease_out(draw.ramp(t, 0.6, 0.8))
-    if scene["kind"] not in ("endcard",):
-        _headline(img, ctx, scene, p)
+    img = draw.apply_alpha(img, draw.scene_alpha(t, dur, fade_in=0.4, fade_out=0.4))
     _placeholder_mark(img, ctx, gap_banner_text(scene))
-    if draw.narration_needs_caption(scene):
+    if draw.narration_needs_caption(scene) and scene.get("key") != "hook":
         draw.caption(img, ctx.fb, scene["narration"],
                      draw.ramp(t, 0.9, 0.6) * draw.ramp(dur - t, 0.0, 0.5), max_lines=2)
     draw.watermark(img, ctx.fb, ctx.spec.watermark)

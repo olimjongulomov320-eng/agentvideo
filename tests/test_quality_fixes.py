@@ -365,3 +365,31 @@ class TestVoiceOver(unittest.TestCase):
         if voice.edge_installed():
             self.skipTest("edge-tts is installed here")
         self.assertIn("not installed", voice.attach(self._spec(), self.tmp))
+
+
+class TestConfirmedFacts(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="confirmed_test_")
+        self.path = os.path.join(self.tmp, "confirmed.json")
+        with open(self.path, "w", encoding="utf-8") as fh:
+            fh.write('{"acme law": {"years_experience": "16", "bogus_key": "x"}}')
+        os.environ["AGENT_CONFIRMED_FACTS"] = self.path
+
+    def tearDown(self):
+        os.environ.pop("AGENT_CONFIRMED_FACTS", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_confirmed_exact_years_drop_the_open_ended_wording(self):
+        claim = research.Claim(id="C1", text="16+ лет опыта", source_id="S1", source_url="u",
+                               evidence_class="SINGLE-SOURCE", relevance="statistic_or_superlative")
+        facts = story.extract_facts(research.ResearchResult("Acme Law", claims=[claim]), "Acme Law")
+        self.assertEqual(facts.get("years_experience"), "16")
+        self.assertEqual(facts.confidence("years_experience"), "CORROBORATED")
+        self.assertIn("16 yildan beri", story.scene_text("origin", facts, "uz")["narration"])
+        self.assertNotIn("ortiq", story.scene_text("origin", facts, "uz")["narration"])
+
+    def test_unknown_keys_and_other_firms_are_ignored(self):
+        facts = story.extract_facts(research.ResearchResult("Other LLP"), "Other LLP")
+        self.assertIsNone(facts.get("years_experience"))
+        facts = story.extract_facts(research.ResearchResult("Acme Law"), "Acme Law")
+        self.assertIsNone(facts.get("bogus_key"))
