@@ -36,7 +36,13 @@ def _edge_synth(text: str, voice: str, out_path: str) -> None:
     async def go() -> None:
         await edge_tts.Communicate(text, voice).save(out_path)
 
-    asyncio.run(asyncio.wait_for(go(), timeout=60))
+    # A private loop: asyncio.run() would unset the thread's current event loop,
+    # which breaks any other asyncio code (the Telegram bot) in the same process.
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(asyncio.wait_for(go(), timeout=60))
+    finally:
+        loop.close()
 
 
 def _duration(path: str) -> float:
