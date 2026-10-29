@@ -439,3 +439,27 @@ def final_verification(scenes: List[Dict[str, Any]], facts: Any, tsum: Dict[str,
         out.append("%s **Пробелы.** Исключены сцены: %s." % (
             warn, ", ".join(o["key"] for o in omitted)))
     return ["- " + x for x in out]
+
+
+# ------------------------------------------------------------ concept document
+def write_concepts_docx(path: str, firm: str, concepts: Sequence[Dict[str, Any]]) -> str:
+    """Write the one Word file the operator reads: the concepts, nothing else."""
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("Концепции презентационного фильма — %s" % firm, level=0)
+    for c in concepts:
+        title = "%s — %s%s" % (c.get("id", ""), c.get("title", ""),
+                               " (рекомендуется)" if c.get("recommended") else "")
+        doc.add_heading(title, level=1)
+        if c.get("central_idea"):
+            doc.add_paragraph(str(c["central_idea"]))
+        for label, key in (("Сильные стороны", "strengths"), ("Слабые стороны", "weaknesses")):
+            vals = c.get(key) or []
+            if vals:
+                doc.add_paragraph().add_run(label).bold = True
+                for v in vals:
+                    doc.add_paragraph(str(v), style="List Bullet")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    doc.save(path)
+    return path

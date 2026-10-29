@@ -292,9 +292,8 @@ class TestAuthorisedFlow(IntegrationBase):
         self.assertIn("Job <code>%s</code> created" % job_id, created)
 
         docs = self.sent_docs(svc)
-        for expected in ("research_report.md", "script.md", "storyboard.md",
-                         "final.mp4"):
-            self.assertIn(expected, docs, docs)
+        # Only the finished film is sent; the working documents stay on disk.
+        self.assertEqual(docs, ["final.mp4"])
 
     def test_authorised_new_command_path_also_works(self):
         cfg = self.make_cfg()

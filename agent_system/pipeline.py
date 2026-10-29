@@ -438,6 +438,12 @@ def concepts_stage(job_dir: str, request: JobRequest, research, revision_dir: st
            json.dumps({"firm": request.firm_name, "concepts": concepts},
                       indent=2, ensure_ascii=False))
     written["facts"] = facts
+    try:
+        from . import producer
+        producer.write_concepts_docx(os.path.join(job_dir, "concepts.docx"),
+                                     request.firm_name, concepts)
+    except Exception:  # the .md copies remain; the docx is a convenience
+        pass
     return written
 
 

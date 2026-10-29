@@ -528,11 +528,11 @@ class BotService(object):
     PAUSED_STATUS_TEXT = {
         "awaiting_research_review": (
             "🔎 <b>Research ready for review</b>\n"
-            "Read the research report and evidence ledger, then reply "
+            "Research is done. Reply "
             "<code>/approve %s</code> to continue to the concept choices."),
         "awaiting_concept_review": (
             "🎞 <b>Concept choices ready</b>\n"
-            "Read <code>concepts.md</code>, then reply "
+            "Read the attached Word file, then reply "
             "<code>/approve %s A</code> (or <code>B</code> / <code>C</code>) to "
             "choose the concept to script."),
         "awaiting_approval": (
@@ -600,18 +600,11 @@ class BotService(object):
     def _send_files(self, chat_id: int, job_id: str, result: Dict[str, Any],
                     documents_only: bool) -> None:
         job_dir = self.cfg.job_dir(job_id)
-        docs = ["research_review.md", "source_access_plan.md", "archive_register.md",
-                "research_report.md", "evidence_ledger.csv",
-                os.path.join("chronology", "chronology.md"),
-                "questionnaireManagingPartner.md", "questionnairePartners.md",
-                "concepts.md", "script.md", "storyboard.md", "production_brief.md",
-                "subtitles.srt", "delivery_report.md"]
-        for name in docs:
-            path = os.path.join(job_dir, name)
-            if not os.path.isfile(path):
-                path = os.path.join(job_dir, "interviews", name)
-            if os.path.isfile(path):
-                self._send_document(chat_id, path, caption=os.path.basename(name))
+        # The operator wants one file: the concept document. Everything else
+        # stays in the job folder on disk.
+        path = os.path.join(job_dir, "concepts.docx")
+        if result.get("status") == "awaiting_concept_review" and os.path.isfile(path):
+            self._send_document(chat_id, path, caption="Concepts")
         if documents_only:
             return
         for key, label in (("preview", "preview clip"), ("output", "final video")):
