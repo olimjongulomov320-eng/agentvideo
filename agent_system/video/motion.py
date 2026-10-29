@@ -93,12 +93,13 @@ class MotionContext(object):
                 return p
         return None
 
-    def portrait(self, path: str) -> Optional[Image.Image]:
+    def portrait(self, path: str, size: Optional[Tuple[int, int]] = None
+                 ) -> Optional[Image.Image]:
         """A team photo scaled once to the card size; None when unreadable."""
-        key = "portrait:" + path
+        size = size or (int(self.w * 0.19), int(self.h * 0.36))
+        key = "portrait:%s:%dx%d" % ((path,) + tuple(size))
         if key not in self._photo_cache:
             try:
-                size = (int(self.w * 0.19), int(self.h * 0.36))
                 self._photo_cache[key] = draw.cover(
                     Image.open(path).convert("RGB"), size, anchor_y=0.25)
             except Exception:
@@ -284,6 +285,50 @@ def _portrait_row(ctx: MotionContext, d: ImageDraw.ImageDraw, img: Image.Image,
                             width=max(2, int(2 * th._s)))
         design.body_text(d, th, x + pw / 2, y + ph + th.sp(2), p["name"], pw * 1.15,
                          size=29, color=col("cream"), align="center", alpha=ip)
+
+
+def _profile(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> Image.Image:
+    """One partner: portrait card on the left, name, role and specialties right."""
+    th = ctx.theme
+    img = _base(ctx, "navy")
+    d = ImageDraw.Draw(img, "RGBA")
+    x0, y0, x1, y1 = th.content
+    card_w = int(ctx.w * 0.26)
+    portraits = [p for p in (scene.get("portraits") or [])
+                 if ctx.portrait(p["file"], (card_w, int(ctx.h * 0.62)))]
+    if portraits:
+        pic = ctx.portrait(portraits[0]["file"], (card_w, int(ctx.h * 0.62)))
+        ip = design.enter(t, 0.3, 0.9)
+        py = int(ctx.h * 0.18 + (1 - ip) * th.sp(3))
+        mask = Image.new("L", pic.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, pic.size[0], pic.size[1]],
+                                               radius=th.sp(2), fill=int(255 * ip))
+        img.paste(pic, (int(x0), py), mask)
+        d.rounded_rectangle([x0, py, x0 + pic.size[0], py + pic.size[1]], radius=th.sp(2),
+                            outline=col("gold_500") + (int(230 * ip),), width=max(2, int(2 * th._s)))
+        tx = x0 + card_w + th.content_w * 0.06
+    else:
+        tx = x0
+    tw = x1 - tx
+    kicker = _kicker_text(scene, ctx)
+    sub = scene.get("sub") or ""
+    role, _sep, specs = sub.partition(" · ")
+    hp = design.enter(t, 0.4, 0.9)
+    hh = design.heading(d, th, tx, ctx.h * 0.24, scene["heading"], tw, size=72,
+                        color=col("cream"), alpha=hp)
+    design.rule(d, th, tx, ctx.h * 0.24 + hh + th.sp(3), th.content_w * 0.10,
+                col("gold_500"), progress=design.enter(t, 1.0, 0.8))
+    yy = ctx.h * 0.24 + hh + th.sp(8)
+    if role:
+        yy += design.body_text(d, th, tx, yy, role, tw, size=36, color=col("gold_300"),
+                               alpha=design.enter(t, 1.1, 0.8)) + th.sp(3)
+    for i, item in enumerate([s.strip() for s in specs.split(",") if s.strip()][:4]):
+        ip = design.enter(t, 1.4 + 0.2 * i, 0.6)
+        d.ellipse([tx, yy + th.sp(1.6), tx + th.sp(1.6), yy + th.sp(3.2)],
+                  fill=col("gold_500") + (int(255 * ip),))
+        yy += design.body_text(d, th, tx + th.sp(3.4), yy, item, tw * 0.9, size=30,
+                               color=col("cream"), alpha=ip) + th.sp(1.5)
+    return img
 
 
 def _stat(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> Image.Image:
@@ -644,7 +689,7 @@ PAINTERS = {
     "statement": _statement, "timeline": _timeline, "list": _list, "stat": _stat,
     "title": _title, "endcard": _endcard, "photo": _photo,
     "illustration": _statement, "quote": _quote, "comparison": _comparison,
-    "process": _process, "logo": _endcard,
+    "process": _process, "logo": _endcard, "profile": _profile,
 }
 
 

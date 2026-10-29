@@ -97,7 +97,7 @@ RESEARCH_ARTIFACTS = (
 CONCEPT_ARTIFACTS = RESEARCH_ARTIFACTS + ("concepts.md",)
 STORYBOARD_ARTIFACTS = CONCEPT_ARTIFACTS + (
     "script.md", "storyboard.md", "scene_manifest.json",
-)
+)  # production_brief.md rides along but is not a gate input
 
 STATE_FILENAME = "pipeline_state.json"
 CHRONOLOGY_DIRNAME = "chronology"
@@ -215,7 +215,10 @@ def format_review(summary: Dict[str, Any]) -> str:
     if summary["gaps"]:
         lines.append("Open gaps:")
         lines += ["  ? %s" % g for g in summary["gaps"]]
-    lines += ["", summary["question"], ""]
+    lines += ["", "Read next: source_access_plan.md (what to hand over and how), "
+              "archive_register.md (achievements, stories, media, quotes, permissions), "
+              "chronology/chronology.md, and the interview questionnaires.",
+              "", summary["question"], ""]
     return "\n".join(lines)
 
 
@@ -252,6 +255,9 @@ def evidence_stage(job_dir: str, request: JobRequest, research,
             written["artifacts"].append(path)
             written["plans"][role] = os.path.basename(path)
     written["timeline"] = timeline
+    from . import producer
+    written["artifacts"] += producer.write_research_package(
+        job_dir, request.firm_name, research, facts)
     return written
 
 
@@ -459,7 +465,7 @@ def script_stage(job_dir: str, request: JobRequest, research, revision_dir: str,
     written: Dict[str, Any] = {"artifacts": [], "facts": facts,
                                "bundle": bundle, "concept_id": concept_id}
     for name in ("script.md", "storyboard.md", "scene_manifest.json",
-                 "subtitles.srt"):
+                 "subtitles.srt", "production_brief.md"):
         src = bundle.get(name)
         if not src:
             continue

@@ -227,6 +227,8 @@ def script_data_claims(js: str, lang: str = "", base_url: str = ""
             for m in _I18N_RE.finditer(body):
                 if m.group(1) == "address" and pick(m):
                     out.append(("Address: " + pick(m), "statement", "", ""))
+            for net, lit in re.findall(r"\b(telegram|instagram|facebook|youtube)\s*:\s*(%s)" % _JS_STR, body):
+                out.append(("Social: %s | %s" % (net, _js_unquote(lit)), "statement", "", ""))
         elif name == "METRICS":
             for m in _METRIC_RE.finditer(body):
                 out.append(("%s — %s" % (_js_unquote(m.group(1)),
@@ -251,6 +253,15 @@ def script_data_claims(js: str, lang: str = "", base_url: str = ""
                 role = fields.get("title", "")
                 out.append(("Team member: %s%s" % (person, " — " + role if role else ""),
                             "statement", "", ""))
+                spec_m = re.search(r"specialization\s*:\s*\[(.*?)\]", rec, re.S)
+                specs = [_js_unquote(x) for x in re.findall(_JS_STR, spec_m.group(1))] if spec_m else []
+                out.append(("Team profile: %s | %s | %s | %s | %s" % (
+                    person, role.replace("|", "/"), "; ".join(specs[:4]), fields.get("experience", ""),
+                    fields.get("cases", "")), "statement", "", ""))
+                for m in _I18N_RE.finditer(rec):
+                    if m.group(1) == "howIHelp" and pick(m):
+                        out.append(("Quote: %s | %s" % (person, pick(m)[:300]), "quote", "", ""))
+                        break
                 if fields.get("photo") and base_url:
                     out.append(("Team photo: %s | %s" % (person, urljoin(base_url, fields["photo"])),
                                 "statement", "", ""))
@@ -469,6 +480,11 @@ def default_fetcher(url: str, timeout: int = 25, max_bytes: int = 3_000_000) -> 
         if wall:
             return FetchResult(False, r.status_code, body, SOURCE_INACCESSIBLE,
                                "login wall — public post feed not readable", r.url)
+    if "instagram.com" in host:
+        # Instagram serves a script shell without a login; its posts are never
+        # in the HTML, so whatever text it holds is not the firm's content.
+        return FetchResult(False, r.status_code, body, SOURCE_INACCESSIBLE,
+                           "login wall — public post feed not readable", r.url)
     if r.status_code == 200 and len(body.strip()) < 200 and "facebook" in host:
         return FetchResult(False, r.status_code, body, SOURCE_INACCESSIBLE,
                            "login wall — empty public body", r.url)
@@ -1024,6 +1040,12 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
             seen_pages[digest] = source.id
             statements = [(t, k, "", "") for t, k in candidate_statements(ex)]
         result.sources.append(source)
+        if source.kind == "website-data":
+            for text, _k, _d, _e in statements:
+                m = re.match(r"Social: (facebook|instagram) \| (\S+)", text)
+                if m and m.group(2) not in queued:
+                    queued.add(m.group(2))
+                    targets.append((m.group(1), m.group(2)))
 
         for text, kind, posted, event in statements:
             if not text:

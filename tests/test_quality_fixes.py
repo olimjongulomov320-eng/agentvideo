@@ -393,3 +393,74 @@ class TestConfirmedFacts(unittest.TestCase):
         self.assertIsNone(facts.get("years_experience"))
         facts = story.extract_facts(research.ResearchResult("Acme Law"), "Acme Law")
         self.assertIsNone(facts.get("bogus_key"))
+
+
+class TestProducerPackage(unittest.TestCase):
+    def setUp(self):
+        from agent_system import producer
+        self.producer = producer
+        self.tmp = tempfile.mkdtemp(prefix="producer_test_")
+        os.environ["AGENT_ARCHIVE_DIR"] = os.path.join(self.tmp, "archive")
+        os.makedirs(os.environ["AGENT_ARCHIVE_DIR"])
+        open(os.path.join(os.environ["AGENT_ARCHIVE_DIR"], "founder_1998.jpg"), "wb").write(b"x")
+        self.claims = [
+            research.Claim(id="C1", text="Social: instagram | https://instagram.com/x/", source_id="S1",
+                           source_url="https://x.uz/data.js", evidence_class="SINGLE-SOURCE",
+                           relevance="statement"),
+            research.Claim(id="C2", text="Team profile: Ali Valiyev | Партнёр | Налоговое право | 10+ лет | 100+",
+                           source_id="S1", source_url="u", evidence_class="SINGLE-SOURCE",
+                           relevance="statement"),
+            research.Claim(id="C3", text="Quote: Ali Valiyev | Men soliq nizolarida himoya qilaman.",
+                           source_id="S1", source_url="u", evidence_class="UNVERIFIED", relevance="quote"),
+            research.Claim(id="C4", text="Case: $5 mln nizo", source_id="S1", source_url="u",
+                           evidence_class="UNVERIFIED", relevance="case_figure"),
+        ]
+        self.res = research.ResearchResult("X", claims=self.claims)
+        self.res.sources.append(research.Source(id="S1", kind="website", url="https://x.uz",
+                                                state="INSPECTED"))
+        self.res.sources.append(research.Source(id="S2", kind="instagram", url="https://instagram.com/x/",
+                                                state="INACCESSIBLE", note="login wall"))
+
+    def tearDown(self):
+        os.environ.pop("AGENT_ARCHIVE_DIR", None)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_access_plan_says_how_to_hand_over_blocked_sources(self):
+        text = self.producer.source_access_plan("X", self.res)
+        self.assertIn("Скачать вашу информацию", text)      # Instagram export steps
+        self.assertIn("https://instagram.com/x/", text)
+        self.assertIn("archive-input", text)
+
+    def test_register_sections_and_permissions(self):
+        reg = self.producer.build_register(self.res)
+        self.assertEqual(len(reg["people"]), 1)
+        self.assertEqual(len(reg["quotes"]), 1)
+        self.assertEqual(len(reg["achievements"]), 1)
+        self.assertTrue(any("адвокатская тайна" in p["need"] for p in reg["permissions"]))
+        self.assertTrue(any(m["title"] == "founder_1998.jpg" for m in reg["media"]))
+        csv_text = self.producer.archive_register_csv(reg)
+        self.assertIn("quotes", csv_text)
+
+    def test_writes_three_files(self):
+        paths = self.producer.write_research_package(self.tmp, "X", self.res)
+        self.assertEqual(sorted(os.path.basename(p) for p in paths),
+                         ["archive_register.csv", "archive_register.md", "source_access_plan.md"])
+        self.assertTrue(all(os.path.isfile(p) for p in paths))
+
+    def test_timing_check_flags_overload_and_silence(self):
+        scenes = [{"id": "a", "key": "hook", "dur": 4.0, "start": 0, "narration": "word " * 30},
+                  {"id": "b", "key": "origin", "dur": 30.0, "start": 4, "narration": "word word"}]
+        rows, summary = self.producer.timing_check(scenes, "en", 34)
+        self.assertEqual([r["status"] for r in rows], ["перегрузка", "пауза"])
+        self.assertFalse(summary["in_range"])
+
+    def test_brief_contains_every_required_section(self):
+        facts = story.Facts(firm_name="X")
+        facts.items["years_experience"] = story.Fact("years_experience", "16", "OP", "", "CORROBORATED")
+        scenes = story.build_scenes("X", facts, "uz", 140.0)
+        kept, omitted = story.drop_gap_scenes(scenes, 140.0)
+        text = self.producer.production_brief("X", facts, kept, "uz", 140.0, omitted)
+        for heading in ("Посценовой план", "Что снять в новом офисе", "Музыка, монтаж",
+                        "Финальная фраза", "Проверка хронометража", "финальная проверка"):
+            self.assertIn(heading, text)
+        self.assertIn("16 yillik yo'l", text)

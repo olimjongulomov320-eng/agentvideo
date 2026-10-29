@@ -36,8 +36,8 @@ def _valid_image(data: bytes) -> bool:
 
 
 def fetch_portraits(team_photos: str, dest_dir: str,
-                    download: Optional[Callable[[str], Optional[bytes]]] = None
-                    ) -> List[Dict[str, Any]]:
+                    download: Optional[Callable[[str], Optional[bytes]]] = None,
+                    prefix: str = "team") -> List[Dict[str, Any]]:
     """``"Name|url;;Name|url"`` -> ``[{"name", "file", "url"}]`` for good photos."""
     download = download or _default_download
     out: List[Dict[str, Any]] = []
@@ -55,7 +55,7 @@ def fetch_portraits(team_photos: str, dest_dir: str,
         os.makedirs(dest_dir, exist_ok=True)
         ext = os.path.splitext(url.split("?")[0])[1].lower()
         ext = ext if ext in (".jpg", ".jpeg", ".png") else ".jpg"
-        path = os.path.join(dest_dir, "team_%d%s" % (len(out) + 1, ext))
+        path = os.path.join(dest_dir, "%s_%d%s" % (prefix, len(out) + 1, ext))
         with open(path, "wb") as fh:
             fh.write(data)
         out.append({"name": name, "file": path, "url": url})

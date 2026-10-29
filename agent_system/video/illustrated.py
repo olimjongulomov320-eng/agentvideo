@@ -515,6 +515,37 @@ def _scene_people(ctx, scene, t, dur):
     return img
 
 
+def _scene_partner(ctx, scene, t, dur):
+    img = _backdrop(ctx, "people", t, dur)
+    d = ImageDraw.Draw(img, "RGBA")
+    people = [p for p in (scene.get("portraits") or []) if os.path.isfile(p["file"])]
+    tx = ctx.w * 0.08
+    if people:
+        size = int(ctx.h * 0.46)
+        pic = _circle_portrait(ctx, people[0]["file"], size)
+        p = draw.ease_out_back(draw.ramp(t, 0.3, 0.9))
+        if pic is not None and p > 0:
+            x, y = int(ctx.w * 0.07), int(ctx.h * 0.2 + (1 - min(1.0, p)) * ctx.h * 0.1)
+            d.ellipse([x - 10, y - 10, x + size + 10, y + size + 10], fill=ACCENT + (int(255 * min(1.0, p)),))
+            img.paste(pic, (x, y), pic)
+        tx = ctx.w * 0.07 + size + ctx.w * 0.06
+    ph = draw.ease_out(draw.ramp(t, 0.5, 0.8))
+    used = _txt(img, ctx, tx, ctx.h * 0.22, scene.get("heading") or "", ctx.fb.display(60),
+                CREAM_TEXT, ph, ctx.w - tx - ctx.w * 0.05, max_lines=2)
+    role, _sep, specs = (scene.get("sub") or "").partition(" · ")
+    y = ctx.h * 0.22 + used + ctx.h * 0.02
+    d.rectangle([tx, y, tx + ctx.w * 0.09 * ph, y + ctx.h * 0.006], fill=ACCENT + (255,))
+    y += ctx.h * 0.03
+    y += _txt(img, ctx, tx, y, role, ctx.fb.serif_regular(40), ACCENT2, draw.ramp(t, 1.0, 0.7),
+              ctx.w - tx - ctx.w * 0.05, max_lines=2) + ctx.h * 0.02
+    for i, item in enumerate([s.strip() for s in specs.split(",") if s.strip()][:4]):
+        a = draw.ramp(t, 1.4 + 0.2 * i, 0.6)
+        d.ellipse([tx, y + ctx.h * 0.012, tx + ctx.h * 0.016, y + ctx.h * 0.028], fill=ACCENT + (int(255 * a),))
+        y += _txt(img, ctx, tx + ctx.h * 0.04, y, item, ctx.fb.serif_regular(34), CREAM_TEXT, a,
+                  ctx.w - tx - ctx.w * 0.08, max_lines=2) + ctx.h * 0.012
+    return img
+
+
 def _pin(d, x: float, y: float, s: float, a: int = 255) -> None:
     d.polygon([(x - s * 0.5, y - s * 1.3), (x + s * 0.5, y - s * 1.3), (x, y)],
               fill=(214, 74, 60, a))
@@ -578,6 +609,12 @@ _PAINTERS = {"hook": _scene_hook, "origin": _scene_origin, "practice": _scene_pr
              "closing": _scene_closing}
 
 
+def _painter_for(key: str):
+    if key.startswith("partner") and key[7:].isdigit():
+        return _scene_partner
+    return _PAINTERS.get(key, _generic)
+
+
 def _generic(ctx, scene, t, dur):
     """Any other scene key: backdrop plus heading and sub."""
     img = _backdrop(ctx, "origin", t, dur)
@@ -589,7 +626,7 @@ def _generic(ctx, scene, t, dur):
 
 def render_illustration(ctx: IllusContext, scene: Dict[str, Any], t: float) -> Image.Image:
     dur = max(0.001, float(scene["dur"]))
-    painter = _PAINTERS.get((scene.get("key") or "").strip(), _generic)
+    painter = _painter_for((scene.get("key") or "").strip())
     return painter(ctx, scene, t, dur)
 
 

@@ -600,13 +600,18 @@ class BotService(object):
     def _send_files(self, chat_id: int, job_id: str, result: Dict[str, Any],
                     documents_only: bool) -> None:
         job_dir = self.cfg.job_dir(job_id)
-        docs = ["research_report.md", "evidence_ledger.csv", "concepts.md",
-                "script.md", "storyboard.md", "subtitles.srt",
-                "delivery_report.md"]
+        docs = ["research_review.md", "source_access_plan.md", "archive_register.md",
+                "research_report.md", "evidence_ledger.csv",
+                os.path.join("chronology", "chronology.md"),
+                "questionnaireManagingPartner.md", "questionnairePartners.md",
+                "concepts.md", "script.md", "storyboard.md", "production_brief.md",
+                "subtitles.srt", "delivery_report.md"]
         for name in docs:
             path = os.path.join(job_dir, name)
+            if not os.path.isfile(path):
+                path = os.path.join(job_dir, "interviews", name)
             if os.path.isfile(path):
-                self._send_document(chat_id, path, caption=name)
+                self._send_document(chat_id, path, caption=os.path.basename(name))
         if documents_only:
             return
         for key, label in (("preview", "preview clip"), ("output", "final video")):

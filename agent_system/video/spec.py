@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 ALLOWED_KINDS = ("statement", "timeline", "list", "stat", "title", "endcard",
                  "photo", "illustration",
                  # composition kinds added with the design system
-                 "quote", "comparison", "process", "logo")
+                 "quote", "comparison", "process", "logo", "profile")
 ALLOWED_TRANSITIONS = ("fade", "dissolve", "wipe", "slide", "cut")
 ASPECTS = {"16:9": (1920, 1080), "9:16": (1080, 1920), "1:1": (1080, 1080),
            "4:5": (1080, 1350)}

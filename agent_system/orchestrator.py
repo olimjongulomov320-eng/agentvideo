@@ -220,6 +220,9 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
                        "claims": [c.__dict__ for c in research.claims],
                        "gaps": research.gaps, "notes": research.notes},
                       indent=2, ensure_ascii=False))
+    from . import producer
+    for p in producer.write_research_package(job_dir, request.firm_name, research):
+        artifact(p)
     say(STAGE_RESEARCH, 35,
         "%d sources read, %d blocked, %d claims logged"
         % (sum(1 for s in research.sources if s.state == "INSPECTED"),

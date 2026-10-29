@@ -202,8 +202,40 @@ _AREA_GLOSSARY = [
     (r"недвижимост\w*", {"en": "real estate", "uz": "ko'chmas mulk", "ru": "недвижимость"}),
     (r"уголовн\w*", {"en": "criminal defence for business", "uz": "biznesni jinoiy himoya qilish",
                       "ru": "уголовная защита бизнеса"}),
+    (r"гражданск\w*", {"en": "civil law", "uz": "fuqarolik huquqi", "ru": "гражданское право"}),
+    (r"административн\w*", {"en": "administrative law", "uz": "ma'muriy huquq", "ru": "административное право"}),
+    (r"инвестиц\w*", {"en": "investment law", "uz": "investitsiya huquqi", "ru": "инвестиционное право"}),
+    (r"коммерческ\w*", {"en": "commercial law", "uz": "tijorat huquqi", "ru": "коммерческое право"}),
+    (r"вэд", {"en": "foreign trade", "uz": "tashqi savdo", "ru": "ВЭД"}),
+    (r"аудит\w*", {"en": "audit", "uz": "audit", "ru": "аудит"}),
+    (r"цифров\w*", {"en": "digital law", "uz": "raqamli huquq", "ru": "цифровое право"}),
+    (r"международн\w*", {"en": "international law", "uz": "xalqaro huquq", "ru": "международное право"}),
     (r"исламск\w*", {"en": "Islamic finance", "uz": "islom moliyasi", "ru": "исламские финансы"}),
 ]
+
+
+_ROLE_GLOSSARY = [
+    (r"управляющ\w*\s+партн", {"en": "managing partner", "uz": "boshqaruvchi sherik"}),
+    (r"основател", {"en": "founder", "uz": "asoschi"}),
+    (r"партн[её]р", {"en": "partner", "uz": "sherik"}),
+    (r"адвокат", {"en": "attorney", "uz": "advokat"}),
+    (r"юрист", {"en": "lawyer", "uz": "yurist"}),
+    (r"профессор", {"en": "professor", "uz": "professor"}),
+]
+
+
+def localise_role(text: str, lang: str) -> str:
+    """A job title in the film's language; unknown wording is dropped, not leaked."""
+    if lang == "ru" or not _CYRILLIC_RE.search(text or ""):
+        return text
+    low = (text or "").lower()
+    found: List[str] = []
+    for pattern, names in _ROLE_GLOSSARY:
+        m = re.search(pattern, low)
+        if m and names[lang] not in found:
+            found.append(names[lang])
+            low = low[:m.start()] + " " + low[m.end():]
+    return ", ".join(found)
 
 
 def localise_text(text: str, lang: str) -> str:
@@ -272,6 +304,7 @@ def _extract_site_data_facts(result: ResearchResult, facts: Facts) -> None:
     team: List[str] = []
     leaders: List[str] = []
     photos: Dict[str, str] = {}
+    profiles: Dict[str, Tuple[str, str, str]] = {}
     area_claim = team_claim = None
     for c in result.claims:
         t = (c.text or "").strip()
@@ -300,6 +333,10 @@ def _extract_site_data_facts(result: ResearchResult, facts: Facts) -> None:
                 if re.search(r"(?i)основател|партн|founder|partner|hamkor|sherik", role):
                     leaders.append(name)
             team_claim = team_claim or c
+        elif t.startswith("Team profile: "):
+            bits = [b.strip() for b in t[14:].split(" | ")]
+            if len(bits) >= 4:
+                profiles[bits[0]] = (bits[1], bits[2], bits[3])
         elif t.startswith("Team photo: ") and " | " in t:
             pname, _sep, purl = t[12:].partition(" | ")
             photos[pname.strip()] = purl.strip()
@@ -308,6 +345,17 @@ def _extract_site_data_facts(result: ResearchResult, facts: Facts) -> None:
         facts.items["practice_areas"] = Fact(
             "practice_areas", ", ".join(areas[:8]), area_claim.source_id,
             area_claim.source_url, area_claim.evidence_class, "services list")
+    partners = []
+    for name, p in profiles.items():
+        if name in leaders and len(partners) < 3:
+            partners.append({"name": name, "role": p[0], "specialties": p[1],
+                             "experience": p[2], "photo": photos.get(name, "")})
+    if partners:
+        partners.sort(key=lambda x: (0 if re.search(r"(?i)основател|founder", x["role"]) else 1))
+        facts.items["partners"] = Fact(
+            "partners", json.dumps(partners, ensure_ascii=False), team_claim.source_id,
+            team_claim.source_url, team_claim.evidence_class,
+            "profiles the firm publishes about its partners (self-reported)")
     if team:
         team = leaders + [n for n in team if n not in leaders]
         shown = [n for n in team if n in photos][:4] or team[:4]
@@ -346,6 +394,7 @@ NARR = {
         "n_clients": "{n} clients", "n_lawyers": "{n} lawyers",
         "office_addr": "You will find us at {a}.",
         "h_address": "Address",
+        "partner_exp": "{n} years of experience", "partner_exp_plus": "more than {n} years of experience",
     },
     "ru": {
         "hook": "Каждый день люди ждут ответа от закона. Порой этот ответ приходит слишком поздно.",
@@ -369,6 +418,7 @@ NARR = {
         "n_clients": "{n} клиентов", "n_lawyers": "{n} адвокатов",
         "office_addr": "Мы находимся по адресу: {a}.",
         "h_address": "Адрес",
+        "partner_exp": "опыт — {n} лет", "partner_exp_plus": "опыт — более {n} лет",
     },
     "uz": {
         "hook": "Har kuni odamlar qonundan javob kutadi. Ba'zida bu javob juda kech keladi.",
@@ -392,6 +442,7 @@ NARR = {
         "n_clients": "{n} mijoz", "n_lawyers": "{n} advokat",
         "office_addr": "Manzilimiz: {a}.",
         "h_address": "Manzil",
+        "partner_exp": "{n} yillik tajriba", "partner_exp_plus": "{n} yildan ortiq tajriba",
     },
 }
 LANGS = tuple(NARR.keys())
@@ -408,6 +459,25 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
     firm = facts.firm_name
     heading, sub, narration = "", "", ""
     needs: List[str] = []
+
+    if key.startswith("partner") and key[7:].isdigit():
+        people = json.loads(facts.get("partners") or "[]")
+        idx = int(key[7:]) - 1
+        if 0 <= idx < len(people):
+            p = people[idx]
+            role = localise_role(p["role"], lang)
+            specs = localise_text(p["specialties"].replace(";", ","), lang)
+            exp = p["experience"].strip()
+            exp_m = re.match(r"(\d+)(\+?)", exp)
+            exp_txt = ""
+            if exp_m:
+                exp_txt = t["partner_exp_plus" if exp_m.group(2) else "partner_exp"].format(n=exp_m.group(1))
+            def cap(x: str) -> str:
+                return (x[:1].upper() + x[1:] + ".") if x else ""
+            narration = " ".join(x for x in (p["name"] + ".", cap(role), cap(exp_txt)) if x)
+            heading = p["name"]
+            sub = " · ".join(x for x in (role[:1].upper() + role[1:] if role else "", specs) if x)
+        return {"narration": narration, "heading": heading, "sub": sub, "needs": ""}
 
     if key == "hook":
         narration = t["hook"]
@@ -763,20 +833,36 @@ def build_concepts(firm: str, facts: Optional[Facts],
 
 
 # ----------------------------------------------------------------- script + storyboard
-def plan_durations(total_sec: float) -> Dict[str, float]:
-    weight_sum = sum(w for _, w, _ in ARC)
+def arc_for(facts: "Facts") -> List[Tuple[str, float, str]]:
+    """The scene arc, with one profile scene per partner the firm publishes."""
+    arc = list(ARC)
+    try:
+        partners = json.loads(facts.get("partners") or "[]")
+    except ValueError:
+        partners = []
+    at = [k for k, _w, _kind in arc].index("people") + 1
+    for i in range(len(partners)):
+        arc.insert(at + i, ("partner%d" % (i + 1), 1.4, "profile"))
+    return arc
+
+
+def plan_durations(total_sec: float, arc: Optional[List[Tuple[str, float, str]]] = None
+                   ) -> Dict[str, float]:
+    arc = arc or ARC
+    weight_sum = sum(w for _, w, _ in arc)
     out = {}
-    for key, w, _ in ARC:
+    for key, w, _ in arc:
         out[key] = round(total_sec * (w / weight_sum), 2)
     return out
 
 
 def build_scenes(firm: str, facts: Facts, lang: str,
                  total_sec: float = 140.0) -> List[Dict[str, Any]]:
-    durs = plan_durations(total_sec)
+    arc = arc_for(facts)
+    durs = plan_durations(total_sec, arc)
     scenes: List[Dict[str, Any]] = []
     acc = 0.0
-    for i, (key, _w, kind) in enumerate(ARC):
+    for i, (key, _w, kind) in enumerate(arc):
         txt = scene_text(key, facts, lang)
         dur = durs[key]
         # Every historical scene must carry the single source it stands on so
@@ -1110,6 +1196,24 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
                 source_assets += [{"kind": "portrait", "name": g["name"], "url": g["url"],
                                    "permission": "published on the firm's own website; "
                                                  "operator to confirm"} for g in got]
+    try:
+        partner_rows = json.loads(facts.get("partners") or "[]")
+    except ValueError:
+        partner_rows = []
+    for sc in scenes:
+        if sc["key"].startswith("partner") and sc["key"][7:].isdigit():
+            row = partner_rows[int(sc["key"][7:]) - 1] if int(sc["key"][7:]) <= len(partner_rows) else {}
+            if row.get("photo"):
+                from . import assets as _assets
+                got = _assets.fetch_portraits("%s|%s" % (row["name"], row["photo"]),
+                                              os.path.join(out_dir, "assets"),
+                                              prefix="partner%s" % sc["key"][7:])
+                if got:
+                    sc["portraits"] = [{"name": got[0]["name"], "file": got[0]["file"]}]
+                    source_assets.append({"kind": "portrait", "name": got[0]["name"],
+                                          "url": got[0]["url"],
+                                          "permission": "published on the firm's own website; "
+                                                        "operator to confirm"})
     omitted: List[Dict[str, Any]] = []
     if omit_gaps is None:
         # AGENT_KEEP_GAP_SCENES=1 keeps unsupported scenes as visible gap
@@ -1180,4 +1284,11 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
     with open(p, "w", encoding="utf-8") as fh:
         json.dump(manifest, fh, indent=2, ensure_ascii=False)
     paths["scene_manifest.json"] = p
+
+    from . import producer
+    p = os.path.join(out_dir, "production_brief.md")
+    with open(p, "w", encoding="utf-8") as fh:
+        fh.write(producer.production_brief(firm, facts, scenes, normalize_lang(lang),
+                                           total_sec, omitted, manifest["concept"]))
+    paths["production_brief.md"] = p
     return paths
