@@ -169,6 +169,16 @@ class JobStore(object):
             conn.close()
         return [dict(r) for r in rows]
 
+    def list_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM jobs WHERE status = ? ORDER BY updated_at ASC LIMIT ?",
+                (status, int(limit))).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
     def list_active(self, limit: int = 20) -> List[Dict[str, Any]]:
         marks = ",".join("?" for _ in ACTIVE_STATES)
         conn = self._connect()

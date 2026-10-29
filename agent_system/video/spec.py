@@ -245,7 +245,7 @@ def validate_render_spec(raw: Dict[str, Any]) -> Tuple[RenderSpec, List[str]]:
     )
 
     spec = RenderSpec(
-        firm_name=_check_text(raw.get("firm_name", ""), "firm_name", errors, 200) or "Untitled",
+        firm_name=_check_text(raw.get("firm_name") or raw.get("firm") or "", "firm_name", errors, 200) or "Untitled",
         language=str(raw.get("language", "en"))[:2].lower() or "en",
         style=style, width=width, height=height, fps=fps, aspect=aspect,
         transition=transition, transition_sec=transition_sec, scenes=scenes,

@@ -173,6 +173,48 @@ def extract_facts(result: ResearchResult, firm_name: str,
     return facts
 
 
+
+# ----------------------------------------------------------- language guard
+# A fact scraped from a Russian page must not leak raw Russian into an Uzbek or
+# English film. Known practice areas are translated; anything else is treated
+# as missing rather than shown in the wrong language.
+_CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
+_AREA_GLOSSARY = [
+    (r"(?:\bit\b|ит|кибер)", {
+        "en": "IT and cyber law", "uz": "IT va kiber huquq", "ru": "IT- и киберправо"}),
+    (r"корпоративн\w*", {
+        "en": "corporate law", "uz": "korporativ huquq", "ru": "корпоративное право"}),
+    (r"экономическ\w*\s+спор\w*", {
+        "en": "economic disputes", "uz": "iqtisodiy nizolar", "ru": "экономические споры"}),
+    (r"налог\w*", {"en": "tax law", "uz": "soliq huquqi", "ru": "налоговое право"}),
+    (r"банковск\w*", {"en": "banking law", "uz": "bank huquqi", "ru": "банковское право"}),
+    (r"арбитраж\w*", {"en": "arbitration", "uz": "arbitraj", "ru": "арбитраж"}),
+    (r"интеллектуальн\w*", {"en": "intellectual property",
+                            "uz": "intellektual mulk", "ru": "интеллектуальная собственность"}),
+    (r"трудов\w*", {"en": "labour law", "uz": "mehnat huquqi", "ru": "трудовое право"}),
+    (r"таможенн\w*", {"en": "customs law", "uz": "bojxona huquqi", "ru": "таможенное право"}),
+    (r"исламск\w*", {"en": "Islamic finance", "uz": "islom moliyasi", "ru": "исламские финансы"}),
+]
+
+
+def localise_text(text: str, lang: str) -> str:
+    """Return ``text`` in ``lang`` when it can be done safely, else "".
+
+    Text already in the target script is returned unchanged. Cyrillic text for
+    a non-Russian film is mapped through the practice-area glossary; if no term
+    is recognised the result is "" so the caller records a gap instead of
+    showing the wrong language on screen.
+    """
+    if lang == "ru" or not _CYRILLIC_RE.search(text or ""):
+        return text
+    low = text.lower()
+    found: List[str] = []
+    for pattern, names in _AREA_GLOSSARY:
+        if re.search(pattern, low) and names[lang] not in found:
+            found.append(names[lang])
+    return ", ".join(found)
+
+
 # ----------------------------------------------------------------- narration
 NARR = {
     "en": {
@@ -258,7 +300,7 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
         heading = (year or t["ph_year"])
         sub = firm
     elif key == "practice":
-        areas = facts.get("practice_areas")
+        areas = localise_text(facts.get("practice_areas") or "", lang)
         if areas:
             narration = t["practice"].format(areas=areas)
             sub = areas[:120]

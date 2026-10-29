@@ -46,3 +46,9 @@ Result: no `preview.mp4`/`final.mp4`; `delivery_report.md` contains "**No video 
 - **QA:** Agent cannot view images/hear audio. All QC is programmatic; a human must watch the final video.
 - **Output location:** `output/jobs/<job_id>/` contains all artifacts; `output/jobs.sqlite3*` stores job state.
 - **Secrets:** `TELEGRAM_BOT_TOKEN` is redacted by `security.redact` in logs and messages. Never echo `.env`.
+## Keep the bot running (launchd)
+```sh
+scripts/install_launchd.sh          # start at login, auto-restart if it crashes
+scripts/install_launchd.sh remove   # uninstall
+```
+The bot also reminds you in Telegram when a job has waited more than 12 hours for your review.

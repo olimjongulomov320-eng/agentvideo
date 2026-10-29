@@ -271,9 +271,6 @@ def _books_layer(ctx: IllusContext, img: Image.Image, prog: float) -> Image.Imag
     for i in range(3):
         p = draw.ramp(1.0 if prog > 0.2 * i else 0.0, 0, 1)
         _books(d, w * (0.14 + 0.24 * i), base, h * (0.10 + 0.02 * i))
-    gt = ctx.fb.display(64)
-    draw.draw_tracked(d, (w * 0.5, h * 0.30), ctx.spec.firm_name[:28], gt,
-                      (18, 44, 62), tracking=1.0, anchor="ca")
     return img
 
 

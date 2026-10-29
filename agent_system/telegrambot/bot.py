@@ -25,13 +25,13 @@ from typing import Any, Dict, Optional
 
 from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup,
                       Update)
-from telegram.error import TelegramError
+from telegram.error import NetworkError, TelegramError, TimedOut
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, TypeHandler, filters)
 
 from .. import opencode_bridge, video
 from ..config import Config
-from ..jobs import JobStore
+from ..jobs import PAUSED_STATES, JobStore
 from ..orchestrator import JobRequest, run_job, sanitize_request
 from ..security import redact
 from . import parsing
@@ -648,6 +648,37 @@ class BotService(object):
                                           caption=caption[:900])
         self._schedule(coro)
 
+    # ---------------------------------------------------------------- reminders
+    REMIND_AFTER_SEC = 12 * 3600
+    REMIND_EVERY_SEC = 12 * 3600
+
+    def remind_stale_reviews(self) -> int:
+        """Nudge the owner about jobs left waiting on a human decision.
+
+        A paused job renders nothing until someone answers, so an unanswered
+        review looks exactly like a bot that has stopped working.
+        """
+        now = time.time()
+        sent = 0
+        if not hasattr(self, "_reminded"):
+            self._reminded: Dict[str, float] = {}
+        for status in PAUSED_STATES:
+            for job in self.store.list_by_status(status):
+                chat_id = job.get("chat_id") or job.get("user_id")
+                waited = now - float(job.get("updated_at") or now)
+                last = self._reminded.get(job["id"], 0.0)
+                if not chat_id or waited < self.REMIND_AFTER_SEC \
+                        or now - last < self.REMIND_EVERY_SEC:
+                    continue
+                self._reminded[job["id"]] = now
+                self._send(int(chat_id),
+                           "⏰ Job <code>%s</code> (%s) has been waiting %d h for your "
+                           "review (%s). Send /approve to continue or /cancel to drop it."
+                           % (job["id"], html.escape(job.get("firm_name") or ""),
+                              int(waited // 3600), status.replace("_", " ")))
+                sent += 1
+        return sent
+
     def _schedule(self, coro) -> None:
         if not self.loop:
             log.warning("event loop not ready; dropping outbound message")
@@ -696,10 +727,39 @@ def build_application(cfg: Config, store: Optional[JobStore] = None) -> Applicat
             log.warning("recovered %d interrupted job(s): %s",
                         len(interrupted), ", ".join(interrupted))
 
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        err = context.error
+        if isinstance(err, (NetworkError, TimedOut)):
+            # Connectivity blips are retried by the polling loop; one line is
+            # enough, a full traceback per blip buries the real faults.
+            log.warning("telegram network problem (will retry): %s", err)
+            return
+        log.error("unhandled error while processing an update", exc_info=err)
+        msg = getattr(update, "effective_message", None)
+        if msg is not None:
+            try:
+                await msg.reply_text("⚠️ Something went wrong handling that. "
+                                     "Your jobs are safe; try /status.")
+            except TelegramError:
+                pass
+
+    async def remind(context: ContextTypes.DEFAULT_TYPE) -> None:
+        try:
+            service.remind_stale_reviews()
+        except Exception as exc:
+            log.warning("review reminder failed: %s", exc)
+
     app = (Application.builder()
            .token(cfg.telegram_bot_token)
+           .connect_timeout(20).read_timeout(30).write_timeout(30).pool_timeout(20)
+           .get_updates_connect_timeout(20).get_updates_read_timeout(40)
            .post_init(post_init)
            .build())
+    app.add_error_handler(on_error)
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(remind, interval=3600, first=300)
+    else:
+        log.warning("job queue unavailable; stale-review reminders are disabled")
 
     app.add_handler(TypeHandler(Update, service._on_any_update), group=-1)
     app.add_handler(CommandHandler("start", service.cmd_start))

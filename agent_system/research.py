@@ -11,6 +11,8 @@ Guarantees
 """
 import codecs
 import csv
+import hashlib
+import html as html_lib
 import io
 import json
 import os
@@ -107,6 +109,51 @@ class ResearchResult:
 
     def public_claims(self) -> List[Claim]:
         return [c for c in self.claims if c.safe_for_public]
+
+
+
+# ----------------------------------------------------------------- telegram
+# A public Telegram channel is readable without a login at t.me/s/<name>. It is
+# often the only place a firm publishes its recent events (an office opening,
+# a conference), so it is read as a dated source rather than skipped.
+_TG_LINK_RE = re.compile(r"(?i)^https?://(?:www\.)?t\.me/(?:s/)?([A-Za-z][A-Za-z0-9_]{3,})/?$")
+_TG_MSG_RE = re.compile(
+    r'(?s)tgme_widget_message_text[^>]*>(.*?)</div>.*?'
+    r'tgme_widget_message_date.*?datetime="([^"]+)"')
+MAX_TELEGRAM_POSTS = 12
+
+
+def telegram_channel_url(url: str) -> str:
+    """The public-preview URL for a t.me channel link, or ''."""
+    m = _TG_LINK_RE.match((url or "").strip())
+    return "https://t.me/s/%s" % m.group(1) if m else ""
+
+
+def telegram_posts(page_html: str, limit: int = MAX_TELEGRAM_POSTS) -> List[Tuple[str, str]]:
+    """Return ``(text, iso_date)`` for the newest posts of a channel preview."""
+    posts: List[Tuple[str, str]] = []
+    for block in (page_html or "").split("tgme_widget_message_wrap")[1:]:
+        m = _TG_MSG_RE.search(block)
+        if not m:
+            continue
+        text = html_lib.unescape(re.sub(r"<[^>]+>", " ", m.group(1)))
+        text = _clean(text)
+        if len(text) >= 30:
+            posts.append((text[:400], m.group(2)[:10]))
+    return posts[-limit:]
+
+
+# Section labels and calls to action are navigation, not evidence.
+_NAV_HEADING = re.compile(
+    r"(?i)^(?:свяжитесь с нами|задать вопрос|наша миссия|области права|"
+    r"наши адвокаты(?: и юристы)?|основатели и партн\w+|выигранные дела|"
+    r"эффективность в цифрах|право и технологии|контакты|услуги|команда|"
+    r"contact us|our (?:team|services|mission)|practice areas|"
+    r"biz bilan bog['’]?lan\w*|jamoamiz|xizmatlar)\W*$")
+
+
+def _is_nav_heading(text: str) -> bool:
+    return bool(_NAV_HEADING.match((text or "").strip()))
 
 
 # ----------------------------------------------------------------- html extraction
@@ -342,7 +389,7 @@ def candidate_statements(ex: _Extractor, limit: int = 25) -> List[Tuple[str, str
         out.append((_clean(ex.description), "description"))
     for h in ex.headings[:12]:
         h = _clean(h)
-        if h and not is_boilerplate(h):
+        if h and not is_boilerplate(h) and not _is_nav_heading(h):
             out.append((h, "heading"))
     seen = set()
     for p in ex.paragraphs:
@@ -454,6 +501,15 @@ def _canonical(url: str) -> str:
     if path.lower().endswith(_LINK_SKIP_EXT):
         return ""
     return "%s://%s%s" % (parts.scheme.lower(), parts.netloc.lower(), path)
+
+
+def _LinkExtractor_hrefs(html: str) -> List[str]:
+    ex = _LinkExtractor()
+    try:
+        ex.feed(html or "")
+    except Exception:
+        return []
+    return ex.hrefs
 
 
 def extract_links(html: str, base_url: str) -> List[str]:
@@ -755,8 +811,22 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
     for i, u in enumerate(extra_urls or []):
         targets.append(("extra-%d" % (i + 1), u))
 
+    # Social channels the homepage links to (public Telegram previews only).
+    home_resp = prefetched.get(website) if website else None
+    if home_resp is not None and home_resp.ok and home_resp.text:
+        have = {u for _l, u in targets}
+        for href in _LinkExtractor_hrefs(home_resp.text):
+            tg = telegram_channel_url(urljoin(website, href))
+            if tg and tg not in have:
+                have.add(tg)
+                targets.append(("telegram-" + tg.rsplit("/", 1)[-1], tg))
+                result.notes.append("Discovery: the homepage links to the public "
+                                    "Telegram channel %s; its recent posts were read." % tg)
+
     sid = 0
     cid = 0
+    seen_pages: Dict[str, str] = {}
+    seen_claims = set()
     for label, url in targets:
         sid += 1
         source = Source(id="S%02d" % sid, kind=classify_source_kind(url), url=url)
@@ -782,13 +852,40 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
             result.gaps.append("Could not read %s (%s): %s" % (label, url, source.note))
             continue
 
-        ex = parse_html(fr.text)
-        source.title = _clean(ex.title)[:200]
+        if telegram_channel_url(url) and "t.me/s/" in url:
+            # Only posts that are about the firm are statements about it; the
+            # rest of a legal-news channel is general news, never a firm fact.
+            tokens = [w for w in re.findall(r"[^\W\d_]{4,}", firm_name.lower())
+                      if w not in ("firm", "law", "legal", "partners", "group")]
+            tokens += ["firmamiz", "gulyamov", "gsp"]
+            statements = [(t, "statement" if any(k in t.lower() for k in tokens)
+                           else "news", d) for t, d in telegram_posts(fr.text)]
+            source.title = "Telegram channel " + url.rsplit("/", 1)[-1]
+            if not statements:
+                source.note = "channel preview had no readable posts"
+        else:
+            ex = parse_html(fr.text)
+            source.title = _clean(ex.title)[:200]
+            # A second URL that serves the same page (/ and /index.html) adds
+            # no evidence and would double every claim.
+            digest = hashlib.sha1(" ".join(
+                [ex.title, ex.description] + ex.headings + ex.paragraphs
+            ).encode("utf-8")).hexdigest()
+            if digest in seen_pages:
+                source.note = "duplicate of %s — same content, not counted again" % seen_pages[digest]
+                result.sources.append(source)
+                continue
+            seen_pages[digest] = source.id
+            statements = [(t, k, "") for t, k in candidate_statements(ex)]
         result.sources.append(source)
 
-        for text, kind in candidate_statements(ex):
+        for text, kind, posted in statements:
             if not text:
                 continue
+            norm = " ".join(text.lower().split())
+            if norm in seen_claims:
+                continue
+            seen_claims.add(norm)
             cid += 1
             evc, safe, needs = classify_claim(text, kind, url, official)
             result.claims.append(Claim(
@@ -797,6 +894,7 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
                 safe_for_public=safe, relevance=kind, needs=needs,
                 excerpt=text[:2000],
                 confidence=confidence_note(evc),
+                source_date=posted,
                 event_date=stated_year(text),
                 privacy_review=privacy_requirement(kind, safe)))
 
