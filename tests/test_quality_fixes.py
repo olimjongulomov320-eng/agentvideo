@@ -241,3 +241,73 @@ class TestCaptions(unittest.TestCase):
             {"kind": "endcard", "heading": "X", "sub": "", "narration": "X. Done."}))
         self.assertTrue(draw.narration_needs_caption(
             {"kind": "stat", "heading": "16+", "sub": "X", "narration": "X has 16 years."}))
+
+
+class TestContradictions(unittest.TestCase):
+    def _claim(self, i, text):
+        return research.Claim(id="C%d" % i, text=text, source_id="S1",
+                              source_url="https://example.com/data.js",
+                              evidence_class="SINGLE-SOURCE",
+                              relevance="statistic_or_superlative")
+
+    def test_different_values_for_one_metric_conflict(self):
+        a, b = self._claim(1, "$100M+ портфель кейсов"), self._claim(2, "$250M+ — portfolio val")
+        notes = research.flag_contradictions([a, b])
+        self.assertEqual(len(notes), 1)
+        self.assertEqual((a.evidence_class, b.evidence_class), ("CONFLICTING", "CONFLICTING"))
+        self.assertIn("C2", a.contradiction)
+
+    def test_same_value_is_not_a_conflict(self):
+        a, b = self._claim(1, "1000+ клиентов"), self._claim(2, "1000+ — clients")
+        self.assertEqual(research.flag_contradictions([a, b]), [])
+        self.assertEqual(a.evidence_class, "SINGLE-SOURCE")
+
+    def test_conflicting_figure_never_becomes_a_fact(self):
+        a = self._claim(1, "16+ лет опыта")
+        a.evidence_class = "CONFLICTING"
+        facts = story.extract_facts(research.ResearchResult("X", claims=[a]), "X")
+        self.assertIsNone(facts.get("years_experience"))
+
+
+class TestPortraits(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="portrait_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _png(self):
+        import io
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (40, 60), (200, 10, 10)).save(buf, "PNG")
+        return buf.getvalue()
+
+    def test_only_valid_images_are_kept(self):
+        from agent_system import assets
+        good = self._png()
+        got = assets.fetch_portraits(
+            "A|https://x.test/a.png;;B|https://x.test/b.png;;C|not-a-url",
+            self.tmp, download=lambda u: good if u.endswith("a.png") else b"<html>")
+        self.assertEqual([g["name"] for g in got], ["A"])
+        self.assertTrue(os.path.isfile(got[0]["file"]))
+
+    def test_download_errors_do_not_raise(self):
+        from agent_system import assets
+
+        def boom(_u):
+            raise OSError("offline")
+        self.assertEqual(assets.fetch_portraits("A|https://x.test/a.png", self.tmp, download=boom), [])
+
+    def test_spec_drops_missing_portrait_files(self):
+        spec, _e = validate_render_spec({"firm": "X", "scenes": [
+            {"id": "sc1", "kind": "statement", "dur": 6.0, "narration": "n",
+             "portraits": [{"name": "A", "file": "/no/such.jpg"}]}]})
+        self.assertEqual(spec.scenes[0]["portraits"], [])
+
+
+class TestNoWatermark(unittest.TestCase):
+    def test_default_spec_has_no_watermark(self):
+        spec, _e = validate_render_spec({"firm": "X", "scenes": [
+            {"id": "sc1", "kind": "statement", "dur": 6.0, "narration": "n"}]})
+        self.assertEqual(spec.watermark, "")

@@ -201,7 +201,8 @@ def script_urls(page_html: str, base_url: str) -> List[str]:
     return out[:MAX_SITE_SCRIPTS]
 
 
-def script_data_claims(js: str, lang: str = "") -> List[Tuple[str, str, str, str]]:
+def script_data_claims(js: str, lang: str = "", base_url: str = ""
+                       ) -> List[Tuple[str, str, str, str]]:
     """``(text, kind, source_date, event_date)`` statements from a data file."""
     order = [l for l in (lang, "ru", "en", "uz") if l]
     blocks = [(m.start(), m.group(1)) for m in _JS_BLOCK_RE.finditer(js or "")]
@@ -236,12 +237,23 @@ def script_data_claims(js: str, lang: str = "") -> List[Tuple[str, str, str, str
             for t in titles[:limit]:
                 out.append(("Practice area: " + t, "statement", "", ""))
         elif name == "LAWYERS":
-            names = [_js_unquote(m.group(2)) for m in _PLAIN_RE.finditer(body) if m.group(1) == "name"]
-            roles = [_js_unquote(m.group(2)) for m in _PLAIN_RE.finditer(body) if m.group(1) == "title"]
-            for i, n in enumerate(names[:limit]):
-                role = roles[i] if i < len(roles) else ""
-                out.append(("Team member: %s%s" % (n, " — " + role if role else ""),
+            for rec in re.split(r"(?m)^\s*\{\s*(?=id\s*:)", body)[1:limit + 1]:
+                fields: Dict[str, str] = {}
+                for m in _PLAIN_RE.finditer(rec):
+                    fields.setdefault(m.group(1), _js_unquote(m.group(2)))
+                person = fields.get("name", "")
+                for m in _I18N_RE.finditer(rec):
+                    if m.group(1) == "name" and pick(m):
+                        person = pick(m)
+                        break
+                if not person:
+                    continue
+                role = fields.get("title", "")
+                out.append(("Team member: %s%s" % (person, " — " + role if role else ""),
                             "statement", "", ""))
+                if fields.get("photo") and base_url:
+                    out.append(("Team photo: %s | %s" % (person, urljoin(base_url, fields["photo"])),
+                                "statement", "", ""))
         elif name in ("CASES", "NEWS"):
             kind = "case_figure" if name == "CASES" else "news"
             for rec in re.split(r"(?m)^\s*\{\s*$\n?(?=\s*id\s*:)", body)[1:]:
@@ -979,7 +991,8 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
                 source.note = "data file too large; not read"
                 statements = []
             else:
-                statements = [(t, k, d, e) for t, k, d, e in script_data_claims(fr.text, language)]
+                statements = [(t, k, d, e) for t, k, d, e in
+                              script_data_claims(fr.text, language, url)]
         elif telegram_channel_url(url) and "t.me/s/" in url:
             # Only posts that are about the firm are statements about it; the
             # rest of a legal-news channel is general news, never a firm fact.
@@ -1031,6 +1044,10 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
                 event_date=event or stated_year(text),
                 privacy_review=privacy_requirement(kind, safe)))
 
+    for note in flag_contradictions(result.claims):
+        result.notes.append(note)
+        result.gaps.append(note)
+
     if not website:
         result.gaps.append("No official website supplied — research limited to supplied links.")
     if facebook and any(s.kind == "facebook" and s.state != SOURCE_INSPECTED
@@ -1042,6 +1059,66 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
         "Only accessible public pages were read. Unreadable sources are listed as gaps; "
         "no content was inferred for them.")
     return result
+
+
+
+# ------------------------------------------------------------- contradictions
+# A firm that publishes the same statistic twice with different values has told
+# us nothing reliable about it. Figures are grouped by what they measure and,
+# when one source gives several different values, every one is marked
+# CONFLICTING so it can never reach the screen as a fact.
+_METRIC_FAMILIES = [
+    ("portfolio value", re.compile(r"(?i)портфел|portfolio|portfolioval")),
+    ("clients", re.compile(r"(?i)клиент|clients?\b|mijoz")),
+    ("lawyers", re.compile(r"(?i)адвокат|lawyers?\b|advokat")),
+    ("years of experience", re.compile(r"(?i)лет\s+опыта|years?\s+(?:of\s+)?(?:experience|on)|yearsonmkt|yil\s+tajriba")),
+]
+_FIGURE_RE = re.compile(r"(?<![\w.])([$€£]?)\s*(\d[\d\s.,]*)\s*(млн|mln|[MmМм]\b|тыс|k\b)?")
+
+
+def _figure_value(text: str) -> Optional[float]:
+    m = _FIGURE_RE.match((text or "").strip())
+    if not m:
+        return None
+    try:
+        v = float(re.sub(r"[\s,]", "", m.group(2)).rstrip("."))
+    except ValueError:
+        return None
+    unit = (m.group(3) or "").lower()
+    if unit in ("млн", "mln", "m", "м"):
+        v *= 1_000_000
+    elif unit in ("тыс", "k"):
+        v *= 1_000
+    return v
+
+
+def flag_contradictions(claims: List[Claim]) -> List[str]:
+    """Mark claims that give different values for one metric; return notes."""
+    groups: Dict[Tuple[str, str], List[Tuple[Claim, float]]] = {}
+    for c in claims:
+        if c.relevance != "statistic_or_superlative":
+            continue
+        value = _figure_value(c.text)
+        if value is None:
+            continue
+        for label, rx in _METRIC_FAMILIES:
+            if rx.search(c.text):
+                groups.setdefault((label, source_key(c.source_url)), []).append((c, value))
+                break
+    notes: List[str] = []
+    for (label, _site), members in groups.items():
+        values = sorted({v for _c, v in members})
+        if len(values) < 2:
+            continue
+        shown = "; ".join("%s (%s)" % (c.text, c.id) for c, _v in members)
+        for c, _v in members:
+            c.evidence_class = CONFLICTING
+            c.safe_for_public = False
+            c.contradiction = "Same source gives different values for %s: %s" % (label, shown)
+            c.confidence = confidence_note(CONFLICTING)
+        notes.append("Conflicting figures for %s on the same site — not used in the film: %s"
+                     % (label, shown))
+    return notes
 
 
 # ----------------------------------------------------------------- serialisation

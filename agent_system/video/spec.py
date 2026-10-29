@@ -4,6 +4,7 @@
 Every backend (motion, illustrated, blender3d) consumes the same shape, so a
 scene manifest produced by the story module renders identically across styles.
 """
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,7 +53,7 @@ class RenderSpec:
     transition_sec: float = 0.7
     scenes: List[Dict[str, Any]] = field(default_factory=list)
     audio: AudioSpec = field(default_factory=AudioSpec)
-    watermark: str = "DEMO / CONCEPT PREVIEW"
+    watermark: str = ""
     output_name: str = "video.mp4"
 
     @property
@@ -104,6 +105,17 @@ def _normalise_needs(value: Any) -> List[str]:
             out.append(token[:NEED_MAX])
         if len(out) >= MAX_NEEDS:
             break
+    return out
+
+
+def _clean_portraits(raw: Any) -> List[Dict[str, str]]:
+    """Up to four ``{name, file}`` pairs whose image file really exists."""
+    out: List[Dict[str, str]] = []
+    if isinstance(raw, list):
+        for p in raw[:4]:
+            if isinstance(p, dict) and isinstance(p.get("name"), str) \
+                    and isinstance(p.get("file"), str) and os.path.isfile(p["file"]):
+                out.append({"name": p["name"][:80], "file": p["file"]})
     return out
 
 
@@ -218,6 +230,7 @@ def validate_render_spec(raw: Dict[str, Any]) -> Tuple[RenderSpec, List[str]]:
                                      errors, NARRATION_MAX),
             "transition": str(rs.get("transition", transition) or transition).lower(),
             "asset": rs.get("asset") if isinstance(rs.get("asset"), (str, type(None))) else None,
+            "portraits": _clean_portraits(rs.get("portraits")),
             # `needs` names what evidence is missing; the renderer prints it on
             # the GAP banner. Keep it, or the banner degenerates to a generic
             # phrase and the film stops saying which fact is unsupplied.
@@ -250,8 +263,7 @@ def validate_render_spec(raw: Dict[str, Any]) -> Tuple[RenderSpec, List[str]]:
         style=style, width=width, height=height, fps=fps, aspect=aspect,
         transition=transition, transition_sec=transition_sec, scenes=scenes,
         audio=audio,
-        watermark=_check_text(raw.get("watermark", "DEMO / CONCEPT PREVIEW"),
-                              "watermark", errors, 60) or "DEMO / CONCEPT PREVIEW",
+        watermark=_check_text(raw.get("watermark", ""), "watermark", errors, 60),
         output_name=_check_text(raw.get("output_name", "video.mp4"), "output_name", errors, 80)
         or "video.mp4",
     )

@@ -1237,8 +1237,7 @@ class TestCriticalRepairRegressions(StagedBase):
         preview = _preview_spec(spec)
         self.assertEqual(preview.output_name, "preview.mp4",
                          "a preview must name itself preview.mp4")
-        self.assertIn("PREVIEW", preview.watermark.upper(),
-                      "a preview must keep a visible demo watermark")
+        self.assertEqual(preview.watermark, "", "films carry no watermark")
 
     # ------------------------------------------------- Fix F: fail-closed QA
     def _spec_with(self, scenes):

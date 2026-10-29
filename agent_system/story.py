@@ -7,6 +7,7 @@ an explicit placeholder like ``[founding year — not found in accessible
 sources]`` so a human sees the gap rather than a confident invention.
 """
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -235,9 +236,13 @@ def _extract_site_data_facts(result: ResearchResult, facts: Facts) -> None:
     """
     areas: List[str] = []
     team: List[str] = []
+    leaders: List[str] = []
+    photos: Dict[str, str] = {}
     area_claim = team_claim = None
     for c in result.claims:
         t = (c.text or "").strip()
+        if c.evidence_class == "CONFLICTING":
+            continue    # a figure the firm contradicts itself on is never narrated
         if c.relevance == "statistic_or_superlative":
             for key, rx in (("years_experience", _STAT_YEARS_RE),
                             ("team_size", _STAT_LAWYERS_RE),
@@ -253,17 +258,30 @@ def _extract_site_data_facts(result: ResearchResult, facts: Facts) -> None:
             areas.append(t[15:].strip())
             area_claim = area_claim or c
         elif t.startswith("Team member: "):
-            name = t[13:].split(" — ")[0].strip()
+            name, _sep, role = t[13:].partition(" — ")
+            name = name.strip()
             if name and name not in team:
                 team.append(name)
+                # Founders and partners lead the film; other staff follow.
+                if re.search(r"(?i)основател|партн|founder|partner|hamkor|sherik", role):
+                    leaders.append(name)
             team_claim = team_claim or c
+        elif t.startswith("Team photo: ") and " | " in t:
+            pname, _sep, purl = t[12:].partition(" | ")
+            photos[pname.strip()] = purl.strip()
     if areas:
         # The structured list of services beats a regex over a marketing blurb.
         facts.items["practice_areas"] = Fact(
             "practice_areas", ", ".join(areas[:8]), area_claim.source_id,
             area_claim.source_url, area_claim.evidence_class, "services list")
     if team:
-        facts.items["team"] = Fact("team", ", ".join(team[:4]), team_claim.source_id,
+        team = leaders + [n for n in team if n not in leaders]
+        shown = [n for n in team if n in photos][:4] or team[:4]
+        facts.items["team_photos"] = Fact(
+            "team_photos", ";;".join("%s|%s" % (n, photos[n]) for n in shown if n in photos),
+            team_claim.source_id, team_claim.source_url, team_claim.evidence_class,
+            "photos published on the firm's own site")
+        facts.items["team"] = Fact("team", ", ".join(shown), team_claim.source_id,
                                    team_claim.source_url, team_claim.evidence_class,
                                    "named on the firm's site")
 
@@ -1039,10 +1057,20 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
     Callers that pass no id (the legacy, ungated path) keep the old behaviour and
     use the recommended concept.
     """
-    import os
     os.makedirs(out_dir, exist_ok=True)
     concepts = build_concepts(firm, facts, result, interview_claims)
     scenes = build_scenes(firm, facts, lang, total_sec)
+    source_assets: List[Dict[str, Any]] = []
+    for sc in scenes:
+        if sc["key"] == "people" and facts.get("team_photos"):
+            from . import assets as _assets
+            got = _assets.fetch_portraits(facts.get("team_photos"),
+                                          os.path.join(out_dir, "assets"))
+            if got:
+                sc["portraits"] = [{"name": g["name"], "file": g["file"]} for g in got]
+                source_assets += [{"kind": "portrait", "name": g["name"], "url": g["url"],
+                                   "permission": "published on the firm's own website; "
+                                                 "operator to confirm"} for g in got]
     omitted: List[Dict[str, Any]] = []
     if omit_gaps is None:
         # AGENT_KEEP_GAP_SCENES=1 keeps unsupported scenes as visible gap
@@ -1106,6 +1134,7 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
                       "confidence": v.confidence} for k, v in facts.items.items()},
         "gaps": facts.missing(),
         "omitted_scenes": omitted,
+        "source_assets": source_assets,
         "scenes": scenes,
     }
     p = os.path.join(out_dir, "scene_manifest.json")

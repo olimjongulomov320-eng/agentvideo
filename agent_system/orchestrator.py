@@ -115,8 +115,8 @@ def _write(path: str, text: str) -> str:
 def _preview_spec(spec) -> Any:
     """Build a short preview spec: the opening scenes at the preview profile.
 
-    The preview is deliberately *not* the deliverable: its watermark says so and
-    its dimensions come from ``PREVIEW_PROFILE``. Frames are still rendered at
+    The preview is deliberately *not* the deliverable: it is shorter and its
+    dimensions come from ``PREVIEW_PROFILE``. Frames are still rendered at
     this (smaller) size natively — nothing is upscaled or downscaled after the
     fact.
     """
@@ -132,7 +132,7 @@ def _preview_spec(spec) -> Any:
     raw["width"] = min(spec.width, int(PREVIEW_PROFILE["width"]))
     raw["height"] = min(spec.height, int(PREVIEW_PROFILE["height"]))
     raw["fps"] = min(spec.fps, int(PREVIEW_PROFILE["fps"]))
-    raw["watermark"] = "DEMO / CONCEPT PREVIEW — SHORT PREVIEW"
+    raw["watermark"] = ""
     raw["output_name"] = "preview.mp4"
     preview, _errors = video.validate_render_spec(raw)
     return preview
@@ -550,8 +550,8 @@ def final_qa_checks(spec, validation, job_dir: str,
 
     A certified final means: the file is technically valid, **no scene still
     shows an evidence-gap marker**, a synchronised subtitle file exists, and the
-    file carries an audio track. Until every one of those holds, the demo
-    watermark stays on the picture.
+    file carries an audio track. Films are never watermarked; an uncertified
+    file is flagged in the report and the bot message instead.
     """
     blockers: List[str] = []
     checks: List[Dict[str, Any]] = []

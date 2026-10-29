@@ -97,7 +97,7 @@ class TestProfiles(unittest.TestCase):
         self.assertLessEqual(prev.width, PREVIEW_PROFILE["width"])
         self.assertLessEqual(prev.height, PREVIEW_PROFILE["height"])
         self.assertLessEqual(prev.fps, PREVIEW_PROFILE["fps"])
-        self.assertIn("PREVIEW", prev.watermark.upper())
+        self.assertEqual(prev.watermark, "")
         self.assertLess(prev.total_duration, full.total_duration)
 
     def test_preview_spec_never_upscales_a_smaller_spec(self):

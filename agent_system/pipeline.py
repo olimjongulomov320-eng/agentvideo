@@ -1184,7 +1184,7 @@ def _run_render(**kw: Any) -> Dict[str, Any]:
     result["status"] = "completed"
     # Fail-closed: only a render that passes every final check is certified as a
     # publishable final. Otherwise the file exists for review but is honestly
-    # reported as not certified (and it keeps the demo watermark).
+    # reported as not certified (no watermark is ever drawn on the picture).
     result["final_qa"] = final_qa_checks(spec, result.get("validation"), job_dir, request)
     if result["final_qa"]["certified"]:
         result["delivery_state"] = "final_ready"

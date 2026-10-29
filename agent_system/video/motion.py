@@ -37,7 +37,6 @@ LIMITATIONS = [
     "Icons are drawn as vector primitives with Pillow, not imported SVG glyphs "
     "(no SVG rasteriser is installed on this machine).",
     "No licensed music is bundled; audio defaults to a synthesized pad (labelled).",
-    "The DEMO / CONCEPT PREVIEW watermark is stamped on every preview frame.",
 ]
 
 _YEAR = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
@@ -93,6 +92,18 @@ class MotionContext(object):
             if os.path.isfile(p):
                 return p
         return None
+
+    def portrait(self, path: str) -> Optional[Image.Image]:
+        """A team photo scaled once to the card size; None when unreadable."""
+        key = "portrait:" + path
+        if key not in self._photo_cache:
+            try:
+                size = (int(self.w * 0.19), int(self.h * 0.36))
+                self._photo_cache[key] = draw.cover(
+                    Image.open(path).convert("RGB"), size, anchor_y=0.25)
+            except Exception:
+                self._photo_cache[key] = None  # type: ignore[assignment]
+        return self._photo_cache[key]
 
     def photo(self, path: str) -> Optional[Image.Image]:
         """Load and pre-scale a photo once (max zoom frame), for cheap push-ins."""
@@ -210,11 +221,15 @@ def _statement(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) 
     design.rule(d, th, x0 + th.sp(3), hy + hh + th.sp(3), th.content_w * 0.10,
                 col("gold_500"), progress=rule_p)
     if scene["sub"] and scene["sub"] != text and not (
-            scene.get("key") == "people" and "," in scene["sub"]):
+            scene.get("key") == "people" and ("," in scene["sub"] or scene.get("portraits"))):
         design.body_text(d, th, x0 + th.sp(3), hy + hh + th.sp(6), scene["sub"],
                          text_w, size=30, color=col("gold_100"),
                          alpha=design.enter(t, 1.15, 0.8))
 
+    portraits = [p for p in (scene.get("portraits") or []) if ctx.portrait(p["file"])]
+    if scene.get("key") == "people" and portraits:
+        _portrait_row(ctx, d, img, portraits, t)
+        return img
     names = [n.strip() for n in (scene.get("sub") or "").split(",") if n.strip()]
     if scene.get("key") == "people" and len(names) >= 2:
         # Real names beat an empty icon frame: stack them on the right zone.
@@ -240,6 +255,35 @@ def _statement(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) 
                      box[2] - iw * 0.25, box[3] - iw * 0.25),
                     col("gold_400"), width=max(3, int(4 * th._s)))
     return img
+
+
+def _portrait_row(ctx: MotionContext, d: ImageDraw.ImageDraw, img: Image.Image,
+                  portraits: List[Dict[str, str]], t: float) -> None:
+    """Team portraits side by side, each fading in with its name beneath."""
+    th = ctx.theme
+    x0, _y0, x1, _y1 = th.content
+    n = len(portraits)
+    first = ctx.portrait(portraits[0]["file"])
+    pw, ph = first.size
+    gap = (th.content_w - pw * n) / max(1, n + 1)
+    top = int(ctx.h * 0.37)
+    radius = th.sp(2)
+    for i, p in enumerate(portraits):
+        pic = ctx.portrait(p["file"])
+        ip = design.enter(t, 0.5 + 0.3 * i, 0.8)
+        if ip <= 0 or pic is None:
+            continue
+        x = int(x0 + gap + i * (pw + gap))
+        y = int(top + (1 - ip) * th.sp(3))
+        mask = Image.new("L", pic.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, pic.size[0], pic.size[1]],
+                                               radius=radius, fill=int(255 * ip))
+        img.paste(pic, (x, y), mask)
+        d.rounded_rectangle([x, y, x + pw, y + ph], radius=radius,
+                            outline=col("gold_500") + (int(220 * ip),),
+                            width=max(2, int(2 * th._s)))
+        design.body_text(d, th, x + pw / 2, y + ph + th.sp(2), p["name"], pw * 1.15,
+                         size=29, color=col("cream"), align="center", alpha=ip)
 
 
 def _stat(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> Image.Image:
