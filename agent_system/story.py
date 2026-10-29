@@ -164,6 +164,8 @@ def extract_facts(result: ResearchResult, firm_name: str,
             if len(cleaned) >= 15:
                 add("practice_areas", cleaned[:200], c, c.evidence_class)
 
+    _extract_site_data_facts(result, facts)
+
     if event_date:
         facts.items["event_date"] = Fact("event_date", event_date, "USER", "supplied",
                                          "CORROBORATED", "supplied by the operator")
@@ -180,8 +182,9 @@ def extract_facts(result: ResearchResult, firm_name: str,
 # as missing rather than shown in the wrong language.
 _CYRILLIC_RE = re.compile(r"[\u0400-\u04FF]")
 _AREA_GLOSSARY = [
-    (r"(?:\bit\b|ит|кибер)", {
+    (r"(?<![а-яa-z])it(?![а-яa-z])|(?<![а-я])ит(?![а-я])|кибер", {
         "en": "IT and cyber law", "uz": "IT va kiber huquq", "ru": "IT- и киберправо"}),
+    (r"m\s*&\s*a|слиян\w*", {"en": "M&A", "uz": "M&A", "ru": "M&A"}),
     (r"корпоративн\w*", {
         "en": "corporate law", "uz": "korporativ huquq", "ru": "корпоративное право"}),
     (r"экономическ\w*\s+спор\w*", {
@@ -193,6 +196,10 @@ _AREA_GLOSSARY = [
                             "uz": "intellektual mulk", "ru": "интеллектуальная собственность"}),
     (r"трудов\w*", {"en": "labour law", "uz": "mehnat huquqi", "ru": "трудовое право"}),
     (r"таможенн\w*", {"en": "customs law", "uz": "bojxona huquqi", "ru": "таможенное право"}),
+    (r"контракт\w*|договор\w*", {"en": "contract law", "uz": "shartnoma huquqi", "ru": "контрактное право"}),
+    (r"недвижимост\w*", {"en": "real estate", "uz": "ko'chmas mulk", "ru": "недвижимость"}),
+    (r"уголовн\w*", {"en": "criminal defence for business", "uz": "biznesni jinoiy himoya qilish",
+                      "ru": "уголовная защита бизнеса"}),
     (r"исламск\w*", {"en": "Islamic finance", "uz": "islom moliyasi", "ru": "исламские финансы"}),
 ]
 
@@ -215,6 +222,52 @@ def localise_text(text: str, lang: str) -> str:
     return ", ".join(found)
 
 
+_STAT_YEARS_RE = re.compile(r"(?i)^(\d+\+?)\s*(?:лет|года?|years?|yil)\b")
+_STAT_LAWYERS_RE = re.compile(r"(?i)^(\d+\+?)\s*(?:адвокат\w*|юрист\w*|lawyers?|advokat\w*)")
+_STAT_CLIENTS_RE = re.compile(r"(?i)^(\d+\+?)\s*(?:клиент\w*|clients?|mijoz\w*)")
+
+
+def _extract_site_data_facts(result: ResearchResult, facts: Facts) -> None:
+    """Facts the firm publishes about itself in its site data file.
+
+    These are self-reported (SINGLE-SOURCE): the script phrases them as the
+    firm's own figures and never as verified achievements.
+    """
+    areas: List[str] = []
+    team: List[str] = []
+    area_claim = team_claim = None
+    for c in result.claims:
+        t = (c.text or "").strip()
+        if c.relevance == "statistic_or_superlative":
+            for key, rx in (("years_experience", _STAT_YEARS_RE),
+                            ("team_size", _STAT_LAWYERS_RE),
+                            ("clients", _STAT_CLIENTS_RE)):
+                m = rx.match(t)
+                if m and key not in facts.items:
+                    facts.items[key] = Fact(key, m.group(1), c.source_id, c.source_url,
+                                            c.evidence_class, "self-reported")
+        elif t.startswith("Address: ") and "address" not in facts.items:
+            facts.items["address"] = Fact("address", t[9:].strip(), c.source_id,
+                                          c.source_url, c.evidence_class, "self-reported")
+        elif t.startswith("Practice area: "):
+            areas.append(t[15:].strip())
+            area_claim = area_claim or c
+        elif t.startswith("Team member: "):
+            name = t[13:].split(" — ")[0].strip()
+            if name and name not in team:
+                team.append(name)
+            team_claim = team_claim or c
+    if areas:
+        # The structured list of services beats a regex over a marketing blurb.
+        facts.items["practice_areas"] = Fact(
+            "practice_areas", ", ".join(areas[:8]), area_claim.source_id,
+            area_claim.source_url, area_claim.evidence_class, "services list")
+    if team:
+        facts.items["team"] = Fact("team", ", ".join(team[:4]), team_claim.source_id,
+                                   team_claim.source_url, team_claim.evidence_class,
+                                   "named on the firm's site")
+
+
 # ----------------------------------------------------------------- narration
 NARR = {
     "en": {
@@ -235,6 +288,11 @@ NARR = {
         "h_practice": "Practice",
         "h_record": "Record",
         "h_people": "People",
+        "origin_years": "By its own account, {firm} has been working for more than {n} years.",
+        "ach_stats": "By the firm's own figures: {parts}.",
+        "n_clients": "{n} clients", "n_lawyers": "{n} lawyers",
+        "office_addr": "You will find us at {a}.",
+        "h_address": "Address",
     },
     "ru": {
         "hook": "Каждый день люди ждут ответа от закона. Порой этот ответ приходит слишком поздно.",
@@ -252,6 +310,11 @@ NARR = {
         "h_practice": "Практика",
         "h_record": "Результаты",
         "h_people": "Люди",
+        "origin_years": "По данным самой фирмы, {firm} работает более {n} лет.",
+        "ach_stats": "По данным фирмы: {parts}.",
+        "n_clients": "{n} клиентов", "n_lawyers": "{n} адвокатов",
+        "office_addr": "Мы находимся по адресу: {a}.",
+        "h_address": "Адрес",
     },
     "uz": {
         "hook": "Har kuni odamlar qonundan javob kutadi. Ba'zida bu javob juda kech keladi.",
@@ -269,6 +332,11 @@ NARR = {
         "h_practice": "Faoliyat",
         "h_record": "Natijalar",
         "h_people": "Odamlar",
+        "origin_years": "Firma ma'lumotiga ko'ra, {firm} {n} yildan ortiq faoliyat yuritmoqda.",
+        "ach_stats": "Firma ma'lumotiga ko'ra: {parts}.",
+        "n_clients": "{n} mijoz", "n_lawyers": "{n} advokat",
+        "office_addr": "Manzilimiz: {a}.",
+        "h_address": "Manzil",
     },
 }
 LANGS = tuple(NARR.keys())
@@ -292,15 +360,22 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
         sub = ""
     elif key == "origin":
         year = facts.get("founding_year")
+        years = facts.get("years_experience")
         if year:
             narration = t["origin"].format(firm=firm, year=year)
+        elif years:
+            narration = t["origin_years"].format(firm=firm, n=years.rstrip("+"))
+            heading, sub = years, firm
         else:
             narration = t["origin_no_year"].format(firm=firm, ph=t["ph_year"])
             needs.append("founding_year")
-        heading = (year or t["ph_year"])
-        sub = firm
+        if year or not years:
+            heading = (year or t["ph_year"])
+            sub = firm
     elif key == "practice":
         areas = localise_text(facts.get("practice_areas") or "", lang)
+        # A film names a handful of practices; the full list stays in the ledger.
+        areas = ", ".join(areas.split(", ")[:5])
         if areas:
             narration = t["practice"].format(areas=areas)
             sub = areas[:120]
@@ -314,21 +389,40 @@ def scene_text(key: str, facts: Facts, lang: str) -> Dict[str, str]:
         if a:
             narration = t["achievements"].format(a=a)
             sub = a[:120]
+        elif facts.get("clients") or facts.get("team_size"):
+            parts = []
+            if facts.get("clients"):
+                parts.append(t["n_clients"].format(n=facts.get("clients")))
+            if facts.get("team_size"):
+                parts.append(t["n_lawyers"].format(n=facts.get("team_size")))
+            narration = t["ach_stats"].format(parts=", ".join(parts))
+            sub = " · ".join(parts)
         else:
             narration = t["achievements"].format(a=t["ph_ach"])
             sub = t["ph_ach"]
             needs.append("achievement")
-        heading = t["h_record"]
+        heading = (facts.get("clients") or facts.get("team_size")) if (
+            not a and (facts.get("clients") or facts.get("team_size"))) else t["h_record"]
     elif key == "people":
         narration = t["people"]
         heading = t["h_people"]
+        sub = facts.get("team") or ""
     elif key == "office":
         narration = t["office"]
         office = facts.get("new_office")
-        sub = office if office else t["ph_office"]
-        if not office:
+        address = localise_text(facts.get("address") or "", lang)
+        if office:
+            sub = office
+            heading = sub
+        elif address:
+            # Only the firm's published address: it is not claimed to be new.
+            narration = t["office_addr"].format(a=address)
+            sub = address
+            heading = t["h_address"]
+        else:
+            sub = t["ph_office"]
+            heading = sub
             needs.append("new_office")
-        heading = sub
     elif key == "closing":
         narration = t["closing"].format(firm=firm)
         heading = firm
@@ -653,6 +747,29 @@ def build_scenes(firm: str, facts: Facts, lang: str,
     return scenes
 
 
+def drop_gap_scenes(scenes: List[Dict[str, Any]], total_sec: float
+                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Remove scenes that still lack their fact; re-time the rest to ``total_sec``.
+
+    A final film must not show ``[placeholders]``. A scene whose evidence is
+    missing is left out and reported (``omitted``) instead of being drawn as a
+    gap banner, so the approved script is exactly what is rendered. The first
+    and last scenes are structural and never dropped.
+    """
+    kept = [s for s in scenes if not s.get("needs")]
+    omitted = [{"id": s["id"], "key": s["key"], "needs": list(s["needs"])}
+               for s in scenes if s.get("needs")]
+    if not omitted or not kept:
+        return scenes, []
+    scale = total_sec / max(0.001, sum(s["dur"] for s in kept))
+    acc = 0.0
+    for s in kept:
+        s["dur"] = round(s["dur"] * scale, 2)
+        s["start"] = round(acc, 2)
+        acc += s["dur"]
+    return kept, omitted
+
+
 class ConceptSelectionError(ValueError):
     """An explicit concept approval was missing or invalid for this job.
 
@@ -738,7 +855,8 @@ def select_concept(concepts: List[Dict[str, Any]],
 
 def script_markdown(firm: str, concepts: List[Dict[str, Any]], scenes: List[Dict[str, Any]],
                     lang: str, style: str, total_sec: float,
-                    concept_id: str = "") -> str:
+                    concept_id: str = "",
+                    omitted: Optional[List[Dict[str, Any]]] = None) -> str:
     chosen, origin = select_concept(concepts, concept_id)
     why = ("approved by the operator" if origin == "approved"
            else "auto-selected — no explicit concept approval was supplied")
@@ -774,6 +892,14 @@ def script_markdown(firm: str, concepts: List[Dict[str, Any]], scenes: List[Dict
             src.replace("|", "/"),
             s.get("evidence") or "—",
             ", ".join(s["needs"]) or "—"))
+    if omitted:
+        lines += ["", "## Scenes left out (no supporting evidence)", "",
+                  "These scenes would need a fact that no source supplied. They are "
+                  "omitted from the film rather than drawn as placeholders; supply the "
+                  "fact (interview, archive or intake answer) and re-run to restore them.",
+                  ""]
+        for o in omitted:
+            lines.append("- `%s` (%s) — needs: %s" % (o["id"], o["key"], ", ".join(o["needs"])))
     lines += ["", "## Concepts considered", ""]
     for c in concepts:
         marks = []
@@ -903,7 +1029,8 @@ def _visual_for(scene: Dict[str, Any], style: str) -> str:
 
 def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchResult,
                        lang: str, style: str, total_sec: float,
-                       concept_id: str = "", interview_claims: Sequence = ()) -> Dict[str, Any]:
+                       concept_id: str = "", interview_claims: Sequence = (),
+                       omit_gaps: Optional[bool] = None) -> Dict[str, Any]:
     """Write concepts.md, script.md, storyboard.md, scene_manifest.json. Returns paths.
 
     ``concept_id`` is the concept the operator approved. When it is supplied the
@@ -916,6 +1043,14 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
     os.makedirs(out_dir, exist_ok=True)
     concepts = build_concepts(firm, facts, result, interview_claims)
     scenes = build_scenes(firm, facts, lang, total_sec)
+    omitted: List[Dict[str, Any]] = []
+    if omit_gaps is None:
+        # AGENT_KEEP_GAP_SCENES=1 keeps unsupported scenes as visible gap
+        # banners, for drafts that show a human exactly what is missing.
+        import os as _os
+        omit_gaps = not _os.environ.get("AGENT_KEEP_GAP_SCENES")
+    if omit_gaps:
+        scenes, omitted = drop_gap_scenes(scenes, total_sec)
     chosen, origin = select_concept(concepts, concept_id)
 
     paths = {}
@@ -941,7 +1076,7 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
     p = os.path.join(out_dir, "script.md")
     with open(p, "w", encoding="utf-8") as fh:
         fh.write(script_markdown(firm, concepts, scenes, lang, style, total_sec,
-                                 concept_id))
+                                 concept_id, omitted))
     paths["script.md"] = p
 
     p = os.path.join(out_dir, "storyboard.md")
@@ -970,6 +1105,7 @@ def build_story_assets(out_dir: str, firm: str, facts: Facts, result: ResearchRe
         "facts": {k: {"value": v.value, "source": v.source_id,
                       "confidence": v.confidence} for k, v in facts.items.items()},
         "gaps": facts.missing(),
+        "omitted_scenes": omitted,
         "scenes": scenes,
     }
     p = os.path.join(out_dir, "scene_manifest.json")

@@ -323,6 +323,49 @@ def lower_third(img: Image.Image, fb: FontBook, title: str, subtitle: str = "",
                fill=GOLD_L)
 
 
+def caption(img: Image.Image, fb: FontBook, text: str, progress: float = 1.0,
+            max_lines: int = 3) -> None:
+    """Burn the narration line into the lower edge of the frame.
+
+    The films carry no synthetic voice (no engine for the language), so without
+    this the narration exists only in a separate .srt and most of the script is
+    never seen. The band sits below the compositions' content area.
+    """
+    text = " ".join((text or "").split())
+    if not text or progress <= 0:
+        return
+    w, h = img.size
+    font = fb.serif_regular(34)
+    d = ImageDraw.Draw(img, "RGBA")
+    lines = wrap(d, text, font, w * 0.80)[:max_lines]
+    line_h = int(h * 0.050)
+    band_h = line_h * len(lines) + int(h * 0.040)
+    top = int(h * 0.962) - band_h
+    a = int(255 * min(1.0, progress))
+    d.rectangle([0, top, w, h], fill=(6, 20, 30, int(190 * min(1.0, progress))))
+    y = top + int(h * 0.020)
+    for ln in lines:
+        tw = text_width(d, ln, font)
+        d.text(((w - tw) / 2, y), ln, font=font, fill=CREAM + (a,))
+        y += line_h
+
+
+def narration_needs_caption(scene: dict) -> bool:
+    """True unless the narration is already the scene's own on-screen text."""
+    narr = " ".join((scene.get("narration") or "").split())
+    if not narr or scene.get("kind") == "endcard":
+        return False
+    shown = " ".join(" ".join(str(scene.get(k) or "") for k in ("heading", "sub")).split())
+    if narr in shown:
+        return False
+    sub = " ".join((scene.get("sub") or "").split())
+    if sub and sub in narr and len(sub) > 0.5 * len(narr):
+        return False    # the on-screen sub line already carries most of the sentence
+    if not (scene.get("heading") or "").strip() and scene.get("kind") == "statement":
+        return False
+    return True
+
+
 def watermark(img: Image.Image, fb: FontBook, text: str = "DEMO / CONCEPT PREVIEW") -> None:
     """Stamp the demo label so previews can never be mistaken for finals."""
     if not text:

@@ -906,6 +906,7 @@ def _run_evidence(**kw: Any) -> Dict[str, Any]:
     research = research_firm(
         request.firm_name, request.website, request.facebook,
         extra_urls=request.extra_urls, fetcher=fetcher,
+        language=request.language,
         progress=lambda m: say("research", 15, m))
     store.update(job_id, params_json=request.to_dict())
 

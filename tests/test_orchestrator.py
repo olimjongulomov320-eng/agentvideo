@@ -166,7 +166,9 @@ class TestOrchestrator(unittest.TestCase):
                   encoding="utf-8") as fh:
             manifest = json.load(fh)
         self.assertTrue(manifest["gaps"], "unreadable sources must appear as gaps")
-        self.assertTrue(any(s["placeholder"] for s in manifest["scenes"]))
+        # Unsupported scenes are left out, never rendered as placeholders.
+        self.assertTrue(manifest["omitted_scenes"])
+        self.assertFalse(any(s["placeholder"] for s in manifest["scenes"]))
         self.assertTrue(any("No readable public claims" in w
                             for w in result.get("warnings", [])))
 

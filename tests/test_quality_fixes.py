@@ -161,3 +161,83 @@ class TestStaleReviewReminder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSiteDataAndScenes(unittest.TestCase):
+    DATA_JS = """
+const FIRM = {
+  name: "X",
+  address: { ru: "г. Ташкент, ул. Мирабад, 46а", uz: "Toshkent sh., Mirobod ko'chasi, 46a-uy", en: "46a Mirobod St., Tashkent" },
+  stats: [
+    { num: "16+", label: "лет опыта" },
+    { num: "15", label: "адвокатов" },
+    { num: "1000+", label: "клиентов" }
+  ]
+};
+const SERVICES = [
+  { icon: "a", title: "Корпоративное право и M&A", desc: "d" },
+  { icon: "b", title: "Налоговая практика", desc: "d" }
+];
+const LAWYERS = [
+  {
+    id: 1,
+    name: "Ali Valiyev",
+    title: "Партнёр",
+  }
+];
+"""
+
+    def test_script_urls_are_same_site_and_skip_libraries(self):
+        html = ('<script src="data.js?v=1"></script><script src="https://cdn.x.com/a.js"></script>'
+                '<script src="/jquery.min.js"></script>')
+        self.assertEqual(research.script_urls(html, "https://example.com/"),
+                         ["https://example.com/data.js"])
+
+    def test_data_claims_pick_the_requested_language(self):
+        uz = [t for t, *_ in research.script_data_claims(self.DATA_JS, "uz")]
+        self.assertIn("Address: Toshkent sh., Mirobod ko'chasi, 46a-uy", uz)
+        en = [t for t, *_ in research.script_data_claims(self.DATA_JS, "en")]
+        self.assertTrue(any("Mirobod St." in t for t in en))
+
+    def _facts(self):
+        claims = [research.Claim(id="C%d" % i, text=t, source_id="S01", source_url="u",
+                                 evidence_class="SINGLE-SOURCE", relevance=k)
+                  for i, (t, k, *_r) in enumerate(research.script_data_claims(self.DATA_JS, "uz"))]
+        return story.extract_facts(research.ResearchResult("X", claims=claims), "X")
+
+    def test_facts_from_site_data(self):
+        f = self._facts()
+        self.assertEqual(f.get("years_experience"), "16+")
+        self.assertEqual(f.get("clients"), "1000+")
+        self.assertEqual(f.get("team"), "Ali Valiyev")
+        self.assertIn("Налоговая практика", f.get("practice_areas"))
+
+    def test_scenes_complete_without_placeholders(self):
+        f = self._facts()
+        for lang in ("en", "ru", "uz"):
+            for key in ("origin", "practice", "achievements", "people", "office"):
+                t = story.scene_text(key, f, lang)
+                self.assertEqual(t["needs"], "", (lang, key))
+                self.assertNotIn("[", t["narration"] + t["heading"] + t["sub"])
+
+    def test_gap_scenes_are_dropped_and_retimed(self):
+        facts = story.Facts(firm_name="X")          # no facts at all
+        scenes = story.build_scenes("X", facts, "uz", 60.0)
+        kept, omitted = story.drop_gap_scenes(scenes, 60.0)
+        self.assertTrue(omitted)
+        self.assertTrue(all(not s["needs"] for s in kept))
+        self.assertAlmostEqual(sum(s["dur"] for s in kept), 60.0, delta=0.2)
+        self.assertEqual(kept[0]["start"], 0.0)
+
+
+class TestCaptions(unittest.TestCase):
+    def test_caption_skipped_when_text_already_on_screen(self):
+        from agent_system.video import draw
+        self.assertFalse(draw.narration_needs_caption(
+            {"kind": "statement", "heading": "", "sub": "", "narration": "Hello there"}))
+        self.assertFalse(draw.narration_needs_caption(
+            {"kind": "title", "heading": "Hello there", "sub": "", "narration": "Hello there"}))
+        self.assertFalse(draw.narration_needs_caption(
+            {"kind": "endcard", "heading": "X", "sub": "", "narration": "X. Done."}))
+        self.assertTrue(draw.narration_needs_caption(
+            {"kind": "stat", "heading": "16+", "sub": "X", "narration": "X has 16 years."}))

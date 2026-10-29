@@ -203,7 +203,7 @@ def _run_job_impl(cfg, store, job_id: str, request: JobRequest,
     research = research_firm(
         request.firm_name, request.website, request.facebook,
         extra_urls=request.extra_urls,
-        fetcher=fetcher,
+        fetcher=fetcher, language=request.language,
         progress=lambda m: say(STAGE_RESEARCH, 15, m),
     )
     guard()

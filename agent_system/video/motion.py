@@ -47,13 +47,13 @@ _YEAR = re.compile(r"\b(1[89]\d{2}|20\d{2})\b")
 _KICKERS = {
     "en": {"hook": "A law firm in Tashkent", "origin": "Origin",
            "practice": "Practice", "achievements": "Record", "people": "People",
-           "office": "New office", "closing": "Since"},
+           "office": "Office", "closing": ""},
     "ru": {"hook": "Юридическая фирма в Ташкенте", "origin": "Истоки",
            "practice": "Практика", "achievements": "Результаты", "people": "Люди",
-           "office": "Новый офис", "closing": "С"},
+           "office": "Офис", "closing": ""},
     "uz": {"hook": "Toshkentdagi yuridik firma", "origin": "Tarix",
            "practice": "Faoliyat", "achievements": "Natijalar", "people": "Odamlar",
-           "office": "Yangi ofis", "closing": "Yildan"},
+           "office": "Ofis", "closing": ""},
 }
 
 # Prefix drawn on an evidence-gap banner, per language.
@@ -154,7 +154,7 @@ def _title(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> I
 
     kicker = _kicker_text(scene, ctx)
     if kicker:
-        design.kicker(d, th, x0, y0 + th.sp(10), kicker, col("gold_500"), 26)
+        design.kicker(d, th, x0, y0 + th.sp(19), kicker, col("gold_500"), 26)
 
     head = (scene["heading"] or ctx.spec.firm_name or "").strip()
     hsize = int((96 if len(head) <= 26 else 78) * zoom)
@@ -172,9 +172,9 @@ def _title(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> I
 
 
 def _kicker_text(scene: Dict[str, Any], ctx: MotionContext) -> str:
-    return _KICKERS[_lang_of(ctx)].get(
-        (scene.get("key") or "").strip(),
-        (scene.get("key") or "").replace("_", " ").title())
+    table = _KICKERS[_lang_of(ctx)]
+    key = (scene.get("key") or "").strip()
+    return table[key] if key in table else key.replace("_", " ").title()
 
 
 def _statement(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -> Image.Image:
@@ -209,10 +209,23 @@ def _statement(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) 
     rule_p = design.enter(t, 1.0, 0.8)
     design.rule(d, th, x0 + th.sp(3), hy + hh + th.sp(3), th.content_w * 0.10,
                 col("gold_500"), progress=rule_p)
-    if scene["sub"] and scene["sub"] != text:
+    if scene["sub"] and scene["sub"] != text and not (
+            scene.get("key") == "people" and "," in scene["sub"]):
         design.body_text(d, th, x0 + th.sp(3), hy + hh + th.sp(6), scene["sub"],
                          text_w, size=30, color=col("gold_100"),
                          alpha=design.enter(t, 1.15, 0.8))
+
+    names = [n.strip() for n in (scene.get("sub") or "").split(",") if n.strip()]
+    if scene.get("key") == "people" and len(names) >= 2:
+        # Real names beat an empty icon frame: stack them on the right zone.
+        for i, n in enumerate(names[:4]):
+            ip = design.enter(t, 0.7 + 0.25 * i, 0.7)
+            ny = ctx.h * 0.30 + i * th.sp(11)
+            d.rectangle([ix0, ny, ix0 + th.sp(1.0), ny + th.sp(8)],
+                        fill=col("gold_500") + (int(255 * ip),))
+            design.body_text(d, th, ix0 + th.sp(3), ny + th.sp(1), n, th.content_w * 0.30,
+                             size=34, color=col("cream"), alpha=ip)
+        return img
 
     # right-hand motif: a thin frame with a line icon, drawn on
     if not long_form:
@@ -306,7 +319,7 @@ def _timeline(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -
             fx = 0.12 + (0.76 * i / max(1, n - 1)) if n > 1 else 0.5
             pts.append((yr, fx))
     else:
-        pts = [("", 0.42)]
+        pts = [("", 0.5 if re.fullmatch(r"\s*\d{1,5}\+?\s*", head or "") else 0.42)]
 
     for i, (yr, fx) in enumerate(pts):
         mp = design.enter(t, 0.5 + i * 0.28, 0.6, ease="out")
@@ -323,6 +336,19 @@ def _timeline(ctx: MotionContext, scene: Dict[str, Any], t: float, dur: float) -
                            size=46, color=col("gold_300"), align="center", alpha=mp,
                            font=th.h2(46))
 
+    hero = re.fullmatch(r"\s*\d{1,5}\+?\s*", head or "") if not years else None
+    if hero:
+        # A bare figure ("16+") is the point of the scene: show it large and put
+        # the sentence it belongs to under the track.
+        hp = design.enter(t, 0.5, 0.9)
+        design.heading(d, th, (xa + xb) / 2, y - th.sp(26), head.strip(), th.content_w * 0.5,
+                       size=150, color=col("gold_300"), align="center", alpha=hp,
+                       font=th.h2(150))
+        if scene["sub"]:
+            design.body_text(d, th, (xa + xb) / 2, y + th.sp(7), scene["sub"],
+                             th.content_w * 0.7, size=34, color=col("cream"),
+                             align="center", alpha=design.enter(t, 1.1, 0.8))
+        return img
     cap = show_head or (scene["sub"] or "")
     if cap:
         cy = y - th.sp(9) if not years else y + th.sp(6)
@@ -582,6 +608,10 @@ def render_scene_frame(ctx: MotionContext, scene: Dict[str, Any], t: float) -> I
     painter = PAINTERS.get(scene["kind"], _statement)
     img = painter(ctx, scene, t, float(scene["dur"]))
     _placeholder_mark(img, ctx.fb, gap_banner_text(scene), _lang_of(ctx))
+    if not ctx.spec.audio.voiceover and draw.narration_needs_caption(scene):
+        dur = float(scene["dur"])
+        draw.caption(img, ctx.fb, scene["narration"],
+                     draw.ramp(t, 0.9, 0.6) * draw.ramp(dur - t, 0.0, 0.5))
     draw.watermark(img, ctx.fb, ctx.spec.watermark)
     return img
 

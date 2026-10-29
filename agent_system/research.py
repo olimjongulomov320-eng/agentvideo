@@ -156,6 +156,116 @@ def _is_nav_heading(text: str) -> bool:
     return bool(_NAV_HEADING.match((text or "").strip()))
 
 
+
+# ------------------------------------------------------------ site data files
+# Many small firm sites render their team, services, statistics and cases from
+# a same-site JavaScript data file (``data.js``). The static HTML then holds
+# only headings, so reading HTML alone misses almost everything the firm
+# publishes. The file is read as TEXT (never executed) and its string literals
+# are turned into claims, each still graded SINGLE-SOURCE like any self-published
+# statement.
+_JS_STR = r"""(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*')"""
+_SCRIPT_SRC_RE = re.compile(r"""(?is)<script[^>]+src\s*=\s*["']([^"']+)["']""")
+_JS_BLOCK_RE = re.compile(r"(?m)^(?:const|let|var)\s+([A-Z][A-Z0-9_]*)\s*=")
+_I18N_RE = re.compile(
+    r"(\w+)\s*:\s*\{\s*(?:ru\s*:\s*(%s)\s*,?\s*)?(?:uz\s*:\s*(%s)\s*,?\s*)?(?:en\s*:\s*(%s)\s*,?\s*)?\}"
+    % (_JS_STR, _JS_STR, _JS_STR))
+_STAT_RE = re.compile(r"num\s*:\s*(%s)\s*,\s*label\s*:\s*(%s)" % (_JS_STR, _JS_STR))
+_METRIC_RE = re.compile(r"num\s*:\s*(%s)\s*,\s*key\s*:\s*(%s)" % (_JS_STR, _JS_STR))
+_PLAIN_RE = re.compile(r"(?m)^\s*(\w+)\s*:\s*(%s)\s*,?\s*$" % _JS_STR)
+MAX_SITE_SCRIPTS = 4
+MAX_SCRIPT_BYTES = 1_500_000
+_DATA_LIMITS = {"CASES": 6, "NEWS": 6, "LAWYERS": 12, "SERVICES": 12}
+
+
+def _js_unquote(lit: str) -> str:
+    lit = (lit or "")[1:-1]
+    return re.sub(r"\\(.)", lambda m: {"n": " ", "t": " "}.get(m.group(1), m.group(1)), lit).strip()
+
+
+def _humanise_key(key: str) -> str:
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", key).lower()
+
+
+def script_urls(page_html: str, base_url: str) -> List[str]:
+    """Same-site ``<script src>`` files worth reading as data, in page order."""
+    host = _host_key(base_url)
+    out: List[str] = []
+    for src in _SCRIPT_SRC_RE.findall(page_html or ""):
+        parts = urlsplit(urljoin(base_url, src.strip()))
+        u = ("%s://%s%s" % (parts.scheme, parts.netloc, parts.path)
+             if parts.scheme in ("http", "https") else "")
+        if u and _host_key(u) == host and u.lower().endswith(".js") and u not in out:
+            if not re.search(r"(?i)(jquery|bootstrap|analytics|gtag|swiper|gsap)", u):
+                out.append(u)
+    return out[:MAX_SITE_SCRIPTS]
+
+
+def script_data_claims(js: str, lang: str = "") -> List[Tuple[str, str, str, str]]:
+    """``(text, kind, source_date, event_date)`` statements from a data file."""
+    order = [l for l in (lang, "ru", "en", "uz") if l]
+    blocks = [(m.start(), m.group(1)) for m in _JS_BLOCK_RE.finditer(js or "")]
+    blocks.append((len(js or ""), ""))
+    out: List[Tuple[str, str, str, str]] = []
+
+    def pick(m, idx_map={"ru": 2, "uz": 3, "en": 4}) -> str:
+        for l in order:
+            lit = m.group(idx_map[l])
+            if lit:
+                return _js_unquote(lit)
+        return ""
+
+    for (start, name), (end, _n) in zip(blocks, blocks[1:]):
+        body = js[start:end]
+        taken = 0
+        limit = _DATA_LIMITS.get(name, 20)
+        if name == "FIRM":
+            for m in _STAT_RE.finditer(body):
+                out.append(("%s %s" % (_js_unquote(m.group(1)), _js_unquote(m.group(2))),
+                            "statistic_or_superlative", "", ""))
+            for m in _I18N_RE.finditer(body):
+                if m.group(1) == "address" and pick(m):
+                    out.append(("Address: " + pick(m), "statement", "", ""))
+        elif name == "METRICS":
+            for m in _METRIC_RE.finditer(body):
+                out.append(("%s — %s" % (_js_unquote(m.group(1)),
+                                         _humanise_key(_js_unquote(m.group(2)))),
+                            "statistic_or_superlative", "", ""))
+        elif name == "SERVICES":
+            titles = [_js_unquote(m) for m in re.findall(r"\btitle\s*:\s*(%s)" % _JS_STR, body)]
+            for t in titles[:limit]:
+                out.append(("Practice area: " + t, "statement", "", ""))
+        elif name == "LAWYERS":
+            names = [_js_unquote(m.group(2)) for m in _PLAIN_RE.finditer(body) if m.group(1) == "name"]
+            roles = [_js_unquote(m.group(2)) for m in _PLAIN_RE.finditer(body) if m.group(1) == "title"]
+            for i, n in enumerate(names[:limit]):
+                role = roles[i] if i < len(roles) else ""
+                out.append(("Team member: %s%s" % (n, " — " + role if role else ""),
+                            "statement", "", ""))
+        elif name in ("CASES", "NEWS"):
+            kind = "case_figure" if name == "CASES" else "news"
+            for rec in re.split(r"(?m)^\s*\{\s*$\n?(?=\s*id\s*:)", body)[1:]:
+                if taken >= limit:
+                    break
+                title = ""
+                for m in _I18N_RE.finditer(rec):
+                    if m.group(1) == "title":
+                        title = pick(m)
+                        break
+                if not title:
+                    continue
+                date = ""
+                for m in _I18N_RE.finditer(rec):
+                    if m.group(1) == "date":
+                        date = pick(m)
+                        break
+                year = re.search(r"year\s*:\s*['\"](\d{4})['\"]", rec)
+                out.append((("%s: %s" % ("Case" if name == "CASES" else "News", title)), kind,
+                            date, year.group(1) if year else stated_year(date)))
+                taken += 1
+    return out
+
+
 # ----------------------------------------------------------------- html extraction
 class _Extractor(HTMLParser):
     """Collect title, meta description, headings and visible paragraph text."""
@@ -783,8 +893,14 @@ def privacy_requirement(kind: str, safe_for_public: bool) -> str:
 def research_firm(firm_name: str, website: str = "", facebook: str = "",
                   extra_urls: Optional[List[str]] = None,
                   fetcher: Optional[Callable[[str], FetchResult]] = None,
-                  progress: Optional[Callable[[str], None]] = None) -> ResearchResult:
-    """Discover and read accessible sources; build the evidence ledger."""
+                  progress: Optional[Callable[[str], None]] = None,
+                  language: str = "") -> ResearchResult:
+    """Discover and read accessible sources; build the evidence ledger.
+
+    ``language`` (en/ru/uz) picks which translation of a multilingual site data
+    file becomes the claim text, so an Uzbek film starts from the site's own
+    Uzbek wording instead of a Russian fragment.
+    """
     fetch = fetcher or default_fetcher
     result = ResearchResult(firm_name=firm_name)
     official = [website] if website else []
@@ -827,7 +943,11 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
     cid = 0
     seen_pages: Dict[str, str] = {}
     seen_claims = set()
-    for label, url in targets:
+    queued = {u for _l, u in targets}
+    index = 0
+    while index < len(targets):
+        label, url = targets[index]
+        index += 1
         sid += 1
         source = Source(id="S%02d" % sid, kind=classify_source_kind(url), url=url)
         report("fetching %s" % label)
@@ -852,20 +972,33 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
             result.gaps.append("Could not read %s (%s): %s" % (label, url, source.note))
             continue
 
-        if telegram_channel_url(url) and "t.me/s/" in url:
+        if url.lower().split("?")[0].endswith(".js"):
+            source.kind = "website-data"
+            source.title = "Site data file " + url.rsplit("/", 1)[-1].split("?")[0]
+            if len(fr.text) > MAX_SCRIPT_BYTES:
+                source.note = "data file too large; not read"
+                statements = []
+            else:
+                statements = [(t, k, d, e) for t, k, d, e in script_data_claims(fr.text, language)]
+        elif telegram_channel_url(url) and "t.me/s/" in url:
             # Only posts that are about the firm are statements about it; the
             # rest of a legal-news channel is general news, never a firm fact.
             tokens = [w for w in re.findall(r"[^\W\d_]{4,}", firm_name.lower())
                       if w not in ("firm", "law", "legal", "partners", "group")]
             tokens += ["firmamiz", "gulyamov", "gsp"]
             statements = [(t, "statement" if any(k in t.lower() for k in tokens)
-                           else "news", d) for t, d in telegram_posts(fr.text)]
+                           else "news", d, "") for t, d in telegram_posts(fr.text)]
             source.title = "Telegram channel " + url.rsplit("/", 1)[-1]
             if not statements:
                 source.note = "channel preview had no readable posts"
         else:
             ex = parse_html(fr.text)
             source.title = _clean(ex.title)[:200]
+            if source.kind == "website":
+                for js_url in script_urls(fr.text, fr.final_url or url):
+                    if js_url not in queued:
+                        queued.add(js_url)
+                        targets.append(("site-data-" + js_url.rsplit("/", 1)[-1][:24], js_url))
             # A second URL that serves the same page (/ and /index.html) adds
             # no evidence and would double every claim.
             digest = hashlib.sha1(" ".join(
@@ -876,10 +1009,10 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
                 result.sources.append(source)
                 continue
             seen_pages[digest] = source.id
-            statements = [(t, k, "") for t, k in candidate_statements(ex)]
+            statements = [(t, k, "", "") for t, k in candidate_statements(ex)]
         result.sources.append(source)
 
-        for text, kind, posted in statements:
+        for text, kind, posted, event in statements:
             if not text:
                 continue
             norm = " ".join(text.lower().split())
@@ -895,7 +1028,7 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
                 excerpt=text[:2000],
                 confidence=confidence_note(evc),
                 source_date=posted,
-                event_date=stated_year(text),
+                event_date=event or stated_year(text),
                 privacy_review=privacy_requirement(kind, safe)))
 
     if not website:

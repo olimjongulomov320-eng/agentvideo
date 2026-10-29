@@ -618,6 +618,9 @@ class TestGapBannerNamesTheMissingEvidence(unittest.TestCase):
 
     # ------------------------------------------------------ orchestrator wiring
     def test_specific_gap_survives_the_whole_orchestrator_run(self):
+        # Gap banners only appear in draft mode; final films omit such scenes.
+        os.environ["AGENT_KEEP_GAP_SCENES"] = "1"
+        self.addCleanup(os.environ.pop, "AGENT_KEEP_GAP_SCENES", None)
         """End-to-end: a real job must hand the renderer the named gap.
 
         This is the path the bug actually travelled: run_job -> manifest ->
