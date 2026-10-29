@@ -442,24 +442,145 @@ def final_verification(scenes: List[Dict[str, Any]], facts: Any, tsum: Dict[str,
 
 
 # ------------------------------------------------------------ concept document
-def write_concepts_docx(path: str, firm: str, concepts: Sequence[Dict[str, Any]]) -> str:
-    """Write the one Word file the operator reads: the concepts, nothing else."""
+# The operator reads one Word file. It is written in Russian or Uzbek and states
+# only what the research ledger holds; whatever is missing is listed as
+# "not confirmed" instead of being filled in.
+_DOC_TEXT = {
+    "ru": {
+        "title": "Концепции презентационного фильма — %s",
+        "basis": "Подтверждённые данные, на которых строятся концепции",
+        "years": "Опыт: %s лет (подтверждено оператором)",
+        "team": "Команда: %s специалистов (по данным сайта фирмы)",
+        "clients": "Клиентов: %s (по данным сайта фирмы, не проверено независимо)",
+        "areas": "Направления практики (по данным сайта): %s",
+        "address": "Адрес фирмы (по данным сайта; что это именно новый офис — не подтверждено): %s",
+        "partners": "Партнёры (по данным сайта): %s",
+        "none": "Данных пока нет.",
+        "unconf_h": "Не подтверждено — в фильме не используется",
+        "unconf": ["Год основания фирмы", "Конкретные дела и результаты клиентов (адвокатская тайна)",
+                   "Награды, рейтинги и упоминания в прессе",
+                   "Дата и детали открытия нового офиса"],
+        "rec": " (рекомендуется)",
+        "idea": "Идея", "tone": "Тон", "beats": "Структура", "need": "Что нужно для этой концепции",
+        "choose": "Для выбора ответьте боту: /approve <номер задачи> A, B или C.",
+        "c": [
+            ("A", "Путь к клиенту",
+             "Право должно быть доступным: фирма сокращает расстояние между человеком и защитой его интересов. Фильм идёт от проблемы клиента к решению.",
+             "Тёплый, спокойный, человечный.",
+             ["Вопрос, с которым приходит клиент", "Команда и направления практики",
+              "Опыт фирмы в годах", "Новый офис как новое место встречи", "Девиз и приглашение"],
+             "Кадры или фото нового офиса; согласие на показ людей."),
+            ("B", "Люди фирмы",
+             "Фирма — это люди. Каждый партнёр представлен своим именем, ролью и специализацией, а голос фильма — это их слова.",
+             "Личный, уважительный, без громких слов.",
+             ["Основатель и управляющий партнёр", "Партнёры и их специализации",
+              "Команда целиком", "Новый офис — дом для команды", "Слова управляющего партнёра"],
+             "Интервью с управляющим партнёром и партнёрами; согласие на фото и видео."),
+            ("C", "Факты и цифры",
+             "Строгий фильм-хроника: только проверяемые цифры и направления практики, каждая цифра с источником.",
+             "Деловой, уверенный, сдержанный.",
+             ["Опыт в годах", "Размер команды и число клиентов", "Направления практики",
+              "Адрес фирмы", "Девиз"],
+             "Подтверждение цифр с сайта у руководства фирмы."),
+        ],
+    },
+    "uz": {
+        "title": "Taqdimot filmi konsepsiyalari — %s",
+        "basis": "Konsepsiyalar tayanadigan tasdiqlangan ma'lumotlar",
+        "years": "Tajriba: %s yil (operator tasdiqlagan)",
+        "team": "Jamoa: %s mutaxassis (firma saytiga ko'ra)",
+        "clients": "Mijozlar: %s (firma saytiga ko'ra, mustaqil tekshirilmagan)",
+        "areas": "Amaliyot yo'nalishlari (saytga ko'ra): %s",
+        "address": "Firma manzili (saytga ko'ra; aynan yangi ofis ekani tasdiqlanmagan): %s",
+        "partners": "Sheriklar (saytga ko'ra): %s",
+        "none": "Hozircha ma'lumot yo'q.",
+        "unconf_h": "Tasdiqlanmagan — filmda ishlatilmaydi",
+        "unconf": ["Firmaning tashkil topgan yili", "Mijozlarning aniq ishlari va natijalari (advokat siri)",
+                   "Mukofotlar, reytinglar va matbuotda tilga olinishi",
+                   "Yangi ofis ochilishining sanasi va tafsilotlari"],
+        "rec": " (tavsiya etiladi)",
+        "idea": "G'oya", "tone": "Ohang", "beats": "Tuzilishi", "need": "Bu konsepsiya uchun nima kerak",
+        "choose": "Tanlash uchun botga yozing: /approve <topshiriq raqami> A, B yoki C.",
+        "c": [
+            ("A", "Mijozgacha bo'lgan yo'l",
+             "Huquq hammaga ochiq bo'lishi kerak: firma inson va uning manfaatlarini himoya qilish orasidagi masofani qisqartiradi. Film mijozning muammosidan yechimga boradi.",
+             "Iliq, xotirjam, insoniy.",
+             ["Mijoz olib keladigan savol", "Jamoa va amaliyot yo'nalishlari",
+              "Firmaning yillik tajribasi", "Yangi ofis — yangi uchrashuv joyi", "Shior va taklif"],
+             "Yangi ofis kadrlari yoki suratlari; odamlarni ko'rsatishga rozilik."),
+            ("B", "Firma odamlari",
+             "Firma — bu odamlar. Har bir sherik o'z ismi, lavozimi va ixtisosligi bilan ko'rsatiladi, film ovozi esa ularning so'zlaridir.",
+             "Shaxsiy, hurmatli, baland gaplarsiz.",
+             ["Asoschi va boshqaruvchi sherik", "Sheriklar va ularning ixtisosliklari",
+              "Butun jamoa", "Yangi ofis — jamoa uchun uy", "Boshqaruvchi sherikning so'zlari"],
+             "Boshqaruvchi sherik va sheriklar bilan intervyu; surat va video uchun rozilik."),
+            ("C", "Faktlar va raqamlar",
+             "Qat'iy xronika-film: faqat tekshiriladigan raqamlar va amaliyot yo'nalishlari, har bir raqam manba bilan.",
+             "Ishbilarmon, ishonchli, vazmin.",
+             ["Yillik tajriba", "Jamoa hajmi va mijozlar soni", "Amaliyot yo'nalishlari",
+              "Firma manzili", "Shior"],
+             "Saytdagi raqamlarni firma rahbariyati bilan tasdiqlash."),
+        ],
+    },
+}
+
+
+def write_concepts_docx(path: str, firm: str, facts: Any, lang: str = "ru") -> str:
+    """Write the one Word file the operator reads: three concepts, facts only."""
     from docx import Document
+    from . import story as story_mod
+
+    lang = lang if lang in _DOC_TEXT else "ru"
+    t = _DOC_TEXT[lang]
+    get = (lambda k: facts.get(k)) if facts is not None else (lambda k: None)
+
+    lines: List[str] = []
+    if get("years_experience"):
+        lines.append(t["years"] % get("years_experience"))
+    if get("team_size"):
+        lines.append(t["team"] % get("team_size"))
+    if get("clients"):
+        lines.append(t["clients"] % get("clients"))
+    if get("practice_areas"):
+        areas = story_mod.localise_text(get("practice_areas"), lang)
+        if areas:
+            lines.append(t["areas"] % areas)
+    if get("address"):
+        lines.append(t["address"] % story_mod.localise_text(get("address"), lang))
+    try:
+        partners = json.loads(get("partners") or "[]")
+    except ValueError:
+        partners = []
+    names = []
+    for p in partners:
+        role = story_mod.localise_role(p.get("role") or "", lang)
+        names.append("%s%s" % (p.get("name", ""), " (%s)" % role if role else ""))
+    if names:
+        lines.append(t["partners"] % "; ".join(n for n in names if n.strip()))
 
     doc = Document()
-    doc.add_heading("Концепции презентационного фильма — %s" % firm, level=0)
-    for c in concepts:
-        title = "%s — %s%s" % (c.get("id", ""), c.get("title", ""),
-                               " (рекомендуется)" if c.get("recommended") else "")
-        doc.add_heading(title, level=1)
-        if c.get("central_idea"):
-            doc.add_paragraph(str(c["central_idea"]))
-        for label, key in (("Сильные стороны", "strengths"), ("Слабые стороны", "weaknesses")):
-            vals = c.get(key) or []
-            if vals:
-                doc.add_paragraph().add_run(label).bold = True
-                for v in vals:
-                    doc.add_paragraph(str(v), style="List Bullet")
+    doc.add_heading(t["title"] % firm, level=0)
+    doc.add_heading(t["basis"], level=1)
+    for ln in lines or [t["none"]]:
+        doc.add_paragraph(ln, style="List Bullet")
+    doc.add_heading(t["unconf_h"], level=2)
+    for ln in t["unconf"]:
+        doc.add_paragraph(ln, style="List Bullet")
+
+    recommended = "B" if len(names) >= 2 else "A"
+    for cid, name, idea, tone, beats, need in t["c"]:
+        doc.add_heading("%s — %s%s" % (cid, name, t["rec"] if cid == recommended else ""), level=1)
+        for label, text in ((t["idea"], idea), (t["tone"], tone)):
+            para = doc.add_paragraph()
+            para.add_run(label + ": ").bold = True
+            para.add_run(text)
+        doc.add_paragraph().add_run(t["beats"] + ":").bold = True
+        for b in beats:
+            doc.add_paragraph(b, style="List Number")
+        para = doc.add_paragraph()
+        para.add_run(t["need"] + ": ").bold = True
+        para.add_run(need)
+    doc.add_paragraph(t["choose"])
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     doc.save(path)
     return path

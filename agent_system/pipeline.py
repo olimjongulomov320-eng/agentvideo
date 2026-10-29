@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -76,6 +77,8 @@ from .security import redact
 # ----------------------------------------------------------------- step names
 STEP_EVIDENCE = "evidence"
 STEP_TRANSCRIPTS = "transcripts"
+log = logging.getLogger(__name__)
+
 STEP_CONCEPTS = "concepts"
 STEP_SCRIPT = "script"
 STEP_RENDER = "render"
@@ -441,9 +444,9 @@ def concepts_stage(job_dir: str, request: JobRequest, research, revision_dir: st
     try:
         from . import producer
         producer.write_concepts_docx(os.path.join(job_dir, "concepts.docx"),
-                                     request.firm_name, concepts)
+                                     request.firm_name, facts, request.language)
     except Exception:  # the .md copies remain; the docx is a convenience
-        pass
+        log.exception("concepts.docx not written")
     return written
 
 
