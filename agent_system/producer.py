@@ -455,6 +455,8 @@ _DOC_TEXT = {
         "areas": "Направления практики (по данным сайта): %s",
         "address": "Адрес фирмы (по данным сайта; что это именно новый офис — не подтверждено): %s",
         "partners": "Партнёры (по данным сайта): %s",
+        "exp": "%s лет",
+        "sample": "Пример первой фразы диктора",
         "none": "Данных пока нет.",
         "unconf_h": "Не подтверждено — в фильме не используется",
         "unconf": ["Год основания фирмы", "Конкретные дела и результаты клиентов (адвокатская тайна)",
@@ -493,6 +495,8 @@ _DOC_TEXT = {
         "areas": "Amaliyot yo'nalishlari (saytga ko'ra): %s",
         "address": "Firma manzili (saytga ko'ra; aynan yangi ofis ekani tasdiqlanmagan): %s",
         "partners": "Sheriklar (saytga ko'ra): %s",
+        "exp": "%s yil",
+        "sample": "Diktorning birinchi jumlasi namunasi",
         "none": "Hozircha ma'lumot yo'q.",
         "unconf_h": "Tasdiqlanmagan — filmda ishlatilmaydi",
         "unconf": ["Firmaning tashkil topgan yili", "Mijozlarning aniq ishlari va natijalari (advokat siri)",
@@ -554,7 +558,10 @@ def write_concepts_docx(path: str, firm: str, facts: Any, lang: str = "ru") -> s
     names = []
     for p in partners:
         role = story_mod.localise_role(p.get("role") or "", lang)
-        names.append("%s%s" % (p.get("name", ""), " (%s)" % role if role else ""))
+        spec = story_mod.localise_text(p.get("specialties") or "", lang)
+        exp = re.sub(r"\s*(лет|год|yil).*$", "", p.get("experience") or "")
+        extra = [x for x in (role, spec, (t["exp"] % exp) if exp else "") if x]
+        names.append("%s%s" % (p.get("name", ""), " (%s)" % "; ".join(extra) if extra else ""))
     if names:
         lines.append(t["partners"] % "; ".join(n for n in names if n.strip()))
 
@@ -577,6 +584,13 @@ def write_concepts_docx(path: str, firm: str, facts: Any, lang: str = "ru") -> s
         doc.add_paragraph().add_run(t["beats"] + ":").bold = True
         for b in beats:
             doc.add_paragraph(b, style="List Number")
+        sample = story_mod.scene_text({"A": "hook", "B": "partner1" if names else "people"}.get(cid, "origin"),
+                                      facts, lang)["narration"] \
+            if facts is not None else ""
+        if sample:
+            para = doc.add_paragraph()
+            para.add_run(t["sample"] + ": ").bold = True
+            para.add_run(sample)
         para = doc.add_paragraph()
         para.add_run(t["need"] + ": ").bold = True
         para.add_run(need)
