@@ -94,3 +94,15 @@ class TestFileValidation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFirmNameNotConfusedByLinks(unittest.TestCase):
+    def test_url_after_the_name_is_not_the_name(self):
+        from agent_system.telegrambot import parsing
+        r = parsing.parse_request_text("GSP Law Firm https://gsplaw.co.uz uzbek motion 2 minutes")
+        self.assertEqual(r["firm_name"], "GSP Law Firm")
+
+    def test_trailing_fields_are_not_part_of_the_name(self):
+        from agent_system.telegrambot import parsing
+        r = parsing.parse_request_text("firm: Acme Partners website https://acme.uz english")
+        self.assertEqual(r["firm_name"], "Acme Partners")

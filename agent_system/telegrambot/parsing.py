@@ -88,12 +88,13 @@ def detect_duration(text: str, default: int = 140) -> int:
 
 def detect_firm(text: str) -> str:
     """Best-effort firm name extraction; never invents one."""
-    low = text or ""
-    m = re.search(r"(?i)\bfor\s+(?:the\s+)?([A-Z][\w'&.,\- ]{2,70}?"
+    # Links are not part of a name: "GSP Law Firm https://x.uz" must not yield "https".
+    low = BARE_DOMAIN_RE.sub(" ", URL_RE.sub(" ", text or ""))
+    m = re.search(r"(?i:\bfor\s+(?:the\s+)?)([A-Z][\w'&.,\- ]{2,70}?"
                   r"(?:Law Firm|Legal|LLP|Partners|Advocates|Associates))\b", low)
     if m:
         return _clean_firm(m.group(1))
-    m = re.search(r"(?i)\b(?:firm|company|kompaniya|фирм\w*)[:\s]+([A-Z][\w'&.,\- ]{2,70})", low)
+    m = re.search(r"(?i:\b(?:firm|company|kompaniya|фирм\w*)[:\s]+)([A-Z][\w'&.,\- ]{2,70})", low)
     if m:
         return _clean_firm(m.group(1))
     m = re.search(r"\b([A-Z][A-Za-z&'\-]+(?:\s+[A-Z][A-Za-z&'\-]+){0,3})\s+"
@@ -106,6 +107,8 @@ def detect_firm(text: str) -> str:
 def _clean_firm(s: str) -> str:
     s = re.sub(r"\s+", " ", (s or "").strip(" .,:;-\u2014"))
     s = re.sub(r"(?i)^(?:the|a|an)\s+", "", s)
+    # the name ends where the request's other fields begin
+    s = re.sub(r"(?i)[\s,.]+(?:website|site|language|style|length|duration|web|url)\b.*$", "", s)
     return s[:120]
 
 
