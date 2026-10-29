@@ -918,6 +918,24 @@ def privacy_requirement(kind: str, safe_for_public: bool) -> str:
 
 
 # ----------------------------------------------------------------- orchestration
+def confirmed_sources(firm_name: str) -> List[str]:
+    """Source links the operator listed for this firm in ``confirmed_facts.json``."""
+    path = os.environ.get("AGENT_CONFIRMED_FACTS") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "confirmed_facts.json")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            table = json.load(fh) or {}
+    except (OSError, ValueError):
+        return []
+    name = (firm_name or "").strip().lower()
+    out: List[str] = []
+    for firm, values in table.items():
+        key = str(firm).strip().lower()
+        if isinstance(values, dict) and key and (key in name or name in key):
+            out += [str(u) for u in values.get("sources") or [] if str(u).startswith("http")]
+    return out
+
+
 def research_firm(firm_name: str, website: str = "", facebook: str = "",
                   extra_urls: Optional[List[str]] = None,
                   fetcher: Optional[Callable[[str], FetchResult]] = None,
@@ -952,8 +970,11 @@ def research_firm(firm_name: str, website: str = "", facebook: str = "",
         prefetched = {}
     if facebook:
         targets.append(("facebook", facebook))
-    for i, u in enumerate(extra_urls or []):
-        targets.append(("extra-%d" % (i + 1), u))
+    seen_urls = {u for _l, u in targets}
+    for i, u in enumerate(list(extra_urls or []) + confirmed_sources(firm_name)):
+        if u not in seen_urls:
+            seen_urls.add(u)
+            targets.append(("extra-%d" % (i + 1), u))
 
     # Social channels the homepage links to (public Telegram previews only).
     home_resp = prefetched.get(website) if website else None

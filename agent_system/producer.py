@@ -450,6 +450,7 @@ _DOC_TEXT = {
         "title": "Концепции презентационного фильма — %s",
         "basis": "Подтверждённые данные, на которых строятся концепции",
         "years": "Опыт: %s лет (подтверждено оператором)",
+        "founded": "Фирма основана в %s году (подтверждено оператором)",
         "team": "Команда: %s специалистов (по данным сайта фирмы)",
         "clients": "Клиентов: %s (по данным сайта фирмы, не проверено независимо)",
         "areas": "Направления практики (по данным сайта): %s",
@@ -459,7 +460,7 @@ _DOC_TEXT = {
         "sample": "Пример первой фразы диктора",
         "none": "Данных пока нет.",
         "unconf_h": "Не подтверждено — в фильме не используется",
-        "unconf": ["Год основания фирмы", "Конкретные дела и результаты клиентов (адвокатская тайна)",
+        "unconf": ["Конкретные дела и результаты клиентов (адвокатская тайна)",
                    "Награды, рейтинги и упоминания в прессе",
                    "Дата и детали открытия нового офиса"],
         "rec": " (рекомендуется)",
@@ -490,6 +491,7 @@ _DOC_TEXT = {
         "title": "Taqdimot filmi konsepsiyalari — %s",
         "basis": "Konsepsiyalar tayanadigan tasdiqlangan ma'lumotlar",
         "years": "Tajriba: %s yil (operator tasdiqlagan)",
+        "founded": "Firma %s-yilda tashkil etilgan (operator tasdiqlagan)",
         "team": "Jamoa: %s mutaxassis (firma saytiga ko'ra)",
         "clients": "Mijozlar: %s (firma saytiga ko'ra, mustaqil tekshirilmagan)",
         "areas": "Amaliyot yo'nalishlari (saytga ko'ra): %s",
@@ -499,7 +501,7 @@ _DOC_TEXT = {
         "sample": "Diktorning birinchi jumlasi namunasi",
         "none": "Hozircha ma'lumot yo'q.",
         "unconf_h": "Tasdiqlanmagan — filmda ishlatilmaydi",
-        "unconf": ["Firmaning tashkil topgan yili", "Mijozlarning aniq ishlari va natijalari (advokat siri)",
+        "unconf": ["Mijozlarning aniq ishlari va natijalari (advokat siri)",
                    "Mukofotlar, reytinglar va matbuotda tilga olinishi",
                    "Yangi ofis ochilishining sanasi va tafsilotlari"],
         "rec": " (tavsiya etiladi)",
@@ -539,7 +541,9 @@ def write_concepts_docx(path: str, firm: str, facts: Any, lang: str = "ru") -> s
     get = (lambda k: facts.get(k)) if facts is not None else (lambda k: None)
 
     lines: List[str] = []
-    if get("years_experience"):
+    if get("founding_year"):
+        lines.append(t["founded"] % get("founding_year"))
+    elif get("years_experience"):
         lines.append(t["years"] % get("years_experience"))
     if get("team_size"):
         lines.append(t["team"] % get("team_size"))
